@@ -18,13 +18,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/gitlab.sh"
 
 MODE="${1:-sync}"
-CONFIG="${DEVKIT_REPOS_CONFIG:-$DEVKIT_CONFIG/repositories.yaml}"
 ROOT="$DEVKIT_WORKSPACE"
+
+# repositories.local.yaml hat Vorrang und ist per .gitignore ausgeschlossen.
+# Damit bleiben interne Hostnamen und Gruppenpfade aus dem Repository heraus,
+# waehrend repositories.yaml als committete Vorlage dient.
+CONFIG="${DEVKIT_REPOS_CONFIG:-}"
+if [ -z "$CONFIG" ]; then
+    if [ -f "$DEVKIT_CONFIG/repositories.local.yaml" ]; then
+        CONFIG="$DEVKIT_CONFIG/repositories.local.yaml"
+    else
+        CONFIG="$DEVKIT_CONFIG/repositories.yaml"
+    fi
+fi
 
 case "$MODE" in
     sync|update|list) ;;
     *) die "Unbekannter Modus '$MODE' (erlaubt: sync, update, list)" ;;
 esac
+
+# Fehlen Zugangsdaten, fragt git interaktiv nach Benutzername und Passwort.
+# Im postStart-Hook blockiert das den Container-Start auf unbestimmte Zeit.
+# Deshalb: schnell scheitern und im Fehlerfall sagen, was zu tun ist.
+# Zum bewussten Abschalten: DEVKIT_GIT_TERMINAL_PROMPT=1
+export GIT_TERMINAL_PROMPT="${DEVKIT_GIT_TERMINAL_PROMPT:-0}"
 
 section "Repositories ($MODE)"
 
@@ -154,6 +171,17 @@ for i in $(seq 0 $((total - 1))); do
         fi
     else
         err "$dir: clone von $url fehlgeschlagen."
+        # Haeufigste Ursache bei HTTPS: git findet keine Zugangsdaten. Ein
+        # gueltiger GITLAB_TOKEN in der Umgebung hilft git nicht - es liest
+        # ausschliesslich seine Credential-Helper.
+        if [[ "$url" == http://* || "$url" == https://* ]]; then
+            proto="${url%%://*}"
+            host="${url#*://}"; host="${host%%/*}"; host="${host#*@}"
+            if ! git_can_auth "$host" "$proto"; then
+                detail "git hat keine Zugangsdaten für $host."
+                detail "Beheben mit: devkit gitlab login"
+            fi
+        fi
         rmdir "$target" 2>/dev/null || true
         failed=$((failed + 1)); failed_names+=("$dir")
     fi

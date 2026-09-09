@@ -134,6 +134,11 @@ docker volume rm devcontainer-setups-jetbrains
 
 ## 5. Repositories konfigurieren
 
+> **Interne Namen nicht einchecken:** Lege deine echte Konfiguration als
+> `.devcontainer/config/repositories.local.yaml` an. Diese Datei hat Vorrang und
+> ist per `.gitignore` ausgeschlossen; `repositories.yaml` bleibt die Vorlage.
+> Reihenfolge: `DEVKIT_REPOS_CONFIG` > `repositories.local.yaml` > `repositories.yaml`.
+
 `.devcontainer/config/repositories.yaml`:
 
 ```yaml
@@ -225,15 +230,27 @@ Daraus wird automatisch ein Git-Credential-Helper erzeugt – der Token steht
 damit **nicht** in den Remote-URLs der Repositories. Prüfen:
 
 ```bash
-devkit gitlab status
+devkit gitlab login    # meldet glab an UND richtet den git-Credential-Helper ein
+devkit gitlab status   # Zeile "Git-Zugang" muss "ok" zeigen
 ```
+
+> **Wichtig:** Ein gesetzter `GITLAB_TOKEN` allein reicht zum Klonen nicht –
+> `git` liest keine Umgebungsvariablen, sondern ausschließlich seine
+> Credential-Helper. `devkit gitlab login` erledigt beides: `glab` anmelden und
+> git für diesen Host einrichten. `devkit gitlab status` weist den API-Zugriff
+> und den Git-Zugang deshalb getrennt aus.
 
 > Bei einer internen CA zuerst den Abschnitt "Root-CA hinterlegen" abarbeiten: ohne die Root-CA im
 > Truststore scheitern sowohl `git clone` als auch die API-Aufrufe mit TLS-Fehler.
 
 ### 6.2 Ganze Gruppen klonen statt Repos einzeln pflegen
 
-In `.devcontainer/config/repositories.yaml`:
+In > **Interne Namen nicht einchecken:** Lege deine echte Konfiguration als
+> `.devcontainer/config/repositories.local.yaml` an. Diese Datei hat Vorrang und
+> ist per `.gitignore` ausgeschlossen; `repositories.yaml` bleibt die Vorlage.
+> Reihenfolge: `DEVKIT_REPOS_CONFIG` > `repositories.local.yaml` > `repositories.yaml`.
+
+`.devcontainer/config/repositories.yaml`:
 
 ```yaml
 gitlab:
@@ -765,9 +782,37 @@ Root-CA fehlt oder wurde nach dem Build hinzugefügt: `devkit certs install`,
 danach `devkit doctor`. Läuft schon der *Build* ins Zertifikatsproblem, muss die
 CA vor dem Rebuild in `.devcontainer/certs/` liegen.
 
+**`git clone` fragt nach Username/Passwort, obwohl `devkit gitlab status` grün ist**
+Zwei verschiedene Dinge: `status` prüft den **API**-Zugriff (curl mit
+`PRIVATE-TOKEN`), `git clone` benutzt ausschließlich seine **Credential-Helper**
+und liest `GITLAB_TOKEN` nicht. Auch `glab auth login` konfiguriert nur `glab`,
+nicht git. Lösung:
+
+```bash
+devkit gitlab login     # meldet glab an UND richtet den git-Credential-Helper ein
+devkit gitlab status    # Zeile "Git-Zugang" muss "ok" zeigen
+```
+
+Manuell prüfen, was git tatsächlich findet:
+
+```bash
+printf 'protocol=https
+host=gitlab.example.com
+
+' | git credential fill
+```
+
+Kommt keine `password=`-Zeile, greift kein Helper. Beachten: VS Code und
+JetBrains setzen einen eigenen globalen `credential.helper`, der Zugangsdaten
+vom Host durchreicht und interne Instanzen nicht kennt. Deshalb registriert
+DevKit seinen Helper **host-spezifisch**
+(`credential.https://<host>.helper=store`) und lässt den globalen unangetastet.
+
 **Repositories werden nicht geklont**
 `devkit repos list` zeigt den Status. Bei privaten Repos Zugangsdaten prüfen
-(Abschnitt "Repositories konfigurieren") – ohne Credentials bricht `git clone` ab.
+(Abschnitt "Repositories konfigurieren"). `clone-repos.sh` setzt
+`GIT_TERMINAL_PROMPT=0`, damit ein fehlendes Credential sofort als Fehler
+auffällt statt den Container-Start mit einem Anmelde-Prompt zu blockieren.
 
 **IntelliJ indexiert bei jedem Start neu**
 Das Volume `...-jetbrains` muss existieren und darf nicht gelöscht werden;

@@ -8,6 +8,12 @@
 #
 # Die Datei wird read-only in den Container gemountet; Änderungen wirken ohne
 # Rebuild, ein `devkit repos sync` genügt.
+#
+# ACHTUNG bei oeffentlichen Repositories: interne Hostnamen und Gruppenpfade
+# gehoeren nicht in eine committete Datei. Lege sie stattdessen in
+#   .devcontainer/config/repositories.local.yaml
+# ab - die hat Vorrang und ist per .gitignore ausgeschlossen. Diese Datei hier
+# bleibt dann die Vorlage.
 # ---------------------------------------------------------------------------
 
 # --- Self-hosted GitLab ----------------------------------------------------

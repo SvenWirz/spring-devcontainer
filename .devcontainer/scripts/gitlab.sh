@@ -20,7 +20,14 @@
 gitlab_host() {
     local host="${GITLAB_HOST:-${DEVKIT_GIT_HOST:-}}"
     if [ -z "$host" ]; then
-        local cfg="${DEVKIT_REPOS_CONFIG:-$DEVKIT_CONFIG/repositories.yaml}"
+        local cfg="${DEVKIT_REPOS_CONFIG:-}"
+        if [ -z "$cfg" ]; then
+            if [ -f "$DEVKIT_CONFIG/repositories.local.yaml" ]; then
+                cfg="$DEVKIT_CONFIG/repositories.local.yaml"
+            else
+                cfg="$DEVKIT_CONFIG/repositories.yaml"
+            fi
+        fi
         [ -f "$cfg" ] && host="$(yq -r '.gitlab.host // ""' "$cfg" 2>/dev/null)"
     fi
     host="${host#https://}"; host="${host#http://}"; host="${host%/}"
@@ -198,6 +205,16 @@ gitlab_status() {
     printf '  %-16s %s\n' "glab" \
         "$(have glab && glab --version 2>/dev/null | head -n1 || echo 'nicht installiert')"
     printf '  %-16s %s\n' "Registry" "${GITLAB_REGISTRY:-registry.$host}"
+
+    # Bewusst getrennt vom API-Token ausgewiesen: der API-Zugriff kann laengst
+    # funktionieren, waehrend `git clone` noch nach Zugangsdaten fragt - git
+    # liest keine Umgebungsvariablen, nur seine Credential-Helper.
+    if git_can_auth "$host"; then
+        printf '  %-16s %s\n' "Git-Zugang" "ok (Credential-Helper liefert Zugangsdaten)"
+    else
+        printf '  %-16s %s\n' "Git-Zugang" "FEHLT - git clone würde interaktiv nachfragen"
+        detail "Beheben mit: devkit gitlab login"
+    fi
 }
 
 gitlab_login() {
@@ -211,6 +228,29 @@ gitlab_login() {
         glab auth login --hostname "$host"
     fi
     glab auth status
+
+    # glab anzumelden reicht NICHT zum Klonen: git kennt weder glab noch
+    # GITLAB_TOKEN und benutzt ausschliesslich seine Credential-Helper.
+    # Ohne den folgenden Schritt fragt `git clone` interaktiv nach Zugangsdaten.
+    section "Git-Zugang für $host"
+    if [ -n "$token" ]; then
+        GITLAB_HOST="$host" GITLAB_TOKEN="$token" \
+            bash "$(dirname "${BASH_SOURCE[0]}")/configure-git.sh" >/dev/null \
+            && ok "git nutzt jetzt den Token für $host."
+    else
+        # Kein Token in der Umgebung - dann glab selbst als Helper eintragen.
+        # Der Token bleibt so ausschliesslich in der glab-Konfiguration.
+        git config --global --replace-all \
+            "credential.https://${host}.helper" '!glab auth git-credential'
+        ok "glab als Credential-Helper für $host eingetragen."
+    fi
+
+    if git_can_auth "$host"; then
+        ok "Prüfung: git erhält Zugangsdaten für $host."
+    else
+        warn "git erhält trotzdem keine Zugangsdaten für $host."
+        detail "Prüfen mit: git credential fill  (protocol=https, host=$host)"
+    fi
 }
 
 gitlab_registry_login() {

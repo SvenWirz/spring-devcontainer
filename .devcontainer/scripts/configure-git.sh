@@ -43,10 +43,34 @@ if is_set "$cred_token" && is_set "$cred_host"; then
     DEVKIT_GIT_HOST="$cred_host"; DEVKIT_GIT_TOKEN="$cred_token"
     user="${DEVKIT_GIT_TOKEN_USER:-oauth2}"
     umask 077
-    printf 'https://%s:%s@%s\n' "$user" "$DEVKIT_GIT_TOKEN" "$DEVKIT_GIT_HOST" > "$HOME/.git-credentials"
+    # Bestehenden Eintrag fuer denselben Host ersetzen, statt Zeilen zu haeufen.
+    if [ -f "$HOME/.git-credentials" ]; then
+        grep -v "@${cred_host}\$" "$HOME/.git-credentials" > "$HOME/.git-credentials.tmp" 2>/dev/null || true
+        mv -f "$HOME/.git-credentials.tmp" "$HOME/.git-credentials"
+    fi
+    printf 'https://%s:%s@%s\n' "$user" "$DEVKIT_GIT_TOKEN" "$DEVKIT_GIT_HOST" >> "$HOME/.git-credentials"
     chmod 600 "$HOME/.git-credentials"
-    git config --global credential.helper store
+
+    # Host-spezifisch registrieren, NICHT global: VS Code und JetBrains setzen
+    # einen eigenen globalen credential.helper, der die Zugangsdaten des Hosts
+    # durchreicht. Ein globales `credential.helper store` wuerde den ersetzen
+    # und damit den Zugang zu allen anderen Hostern kappen.
+    git config --global --replace-all "credential.https://${cred_host}.helper" store
     ok "HTTPS-Zugangsdaten für $cred_host hinterlegt."
+fi
+
+# --- Kann git den Host wirklich erreichen? ---------------------------------
+# Ein gesetzter GITLAB_TOKEN allein genuegt nicht: git liest keine
+# Umgebungsvariablen, sondern ausschliesslich seine Credential-Helper. Ohne
+# diese Pruefung faellt das erst beim Klonen auf - dann mit interaktivem Prompt.
+if is_set "$cred_host"; then
+    if git_can_auth "$cred_host"; then
+        detail "git kann sich gegenüber $cred_host authentifizieren."
+    else
+        warn "git findet keine Zugangsdaten für $cred_host - Klonen würde nachfragen."
+        detail "Token setzen (GITLAB_TOKEN) und dieses Skript erneut ausführen,"
+        detail "oder: devkit gitlab login"
+    fi
 fi
 
 # --- SSH-Keys vom Host (optionaler Mount, siehe devcontainer.json) ----------

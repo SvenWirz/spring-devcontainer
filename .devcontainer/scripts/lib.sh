@@ -40,4 +40,16 @@ as_root() {
 # kommen als leerer String an, nicht als "unset").
 is_set() { [ -n "${1:-}" ]; }
 
+# Kann git fuer <host> Zugangsdaten aufloesen? Das ist etwas anderes als "der
+# API-Token funktioniert": git liest keine Umgebungsvariablen, sondern
+# ausschliesslich seine Credential-Helper.
+#   git_can_auth <host> [protocol]   protocol: https (Default) oder http
+git_can_auth() {
+    local host="$1" proto="${2:-https}" out
+    [ -n "$host" ] || return 1
+    out="$(printf 'protocol=%s\nhost=%s\n\n' "$proto" "$host" \
+           | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null)" || return 1
+    grep -q '^password=.' <<<"$out"
+}
+
 _DEVKIT_LIB_LOADED=1
