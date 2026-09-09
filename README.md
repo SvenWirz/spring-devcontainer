@@ -12,7 +12,10 @@ Microservices mit dem AI-Agenten **OpenCode**, nutzbar aus **IntelliJ IDEA**
 | Root-CA | `.devcontainer/certs/` in System- **und** Java-Truststore, bereits zur Build-Zeit |
 | Persistentes Volume | Named Volumes für `/src`, Gradle-Cache, OpenCode-Daten, Docker-Daten, IDE-Cache |
 | Repositories | deklarativ in `.devcontainer/config/repositories.yaml`, Klonen nach `/src` |
-| Toolchain | Eclipse Temurin JDK 21, Gradle, OpenCode, Node LTS + npm, `glab` (GitLab-CLI) |
+| Toolchain | Eclipse Temurin JDK **17 und 21**, Gradle, OpenCode, Node LTS + npm, `glab` |
+| Registry-Mirror | `daemon.json` des inneren Daemons + Testcontainers-Image-Präfix gegen Docker-Hub-Limits |
+| Commit-Signierung | GPG (Schlüsselbund vom Host) oder SSH-Signierung, automatisch eingerichtet |
+| Vorgebautes Image | `.gitlab-ci.yml` baut und pusht das Image in die GitLab Registry |
 | Self-hosted GitLab | Gruppen-Discovery beim Klonen, Credential-Helper, Container-/Maven-Registry |
 | Mountbare Config | `.devcontainer/config/gradle/` und `.devcontainer/config/opencode/` (read-only) |
 
@@ -62,24 +65,33 @@ devcontainer exec --workspace-folder . bash
 ```
 .devcontainer/
 ├── devcontainer.json          Container-Definition, Mounts, Volumes, Lifecycle
-├── Dockerfile                 Temurin 21 + Gradle + OpenCode + Tooling
+├── Dockerfile                 Temurin 17+21, Gradle, OpenCode, glab, Tooling
 ├── certs/                     Root-CA-Zertifikate ablegen  (read-only gemountet)
 ├── config/                    read-only nach /opt/devkit/config gemountet
 │   ├── repositories.yaml      Liste der zu klonenden Repositories
+│   ├── docker/
+│   │   └── daemon.json.example  Registry-Mirror des inneren Daemons
 │   ├── gradle/
 │   │   ├── gradle.properties.example
 │   │   └── init.d/            global wirksame Gradle-Init-Skripte
+│   ├── testcontainers/
+│   │   └── testcontainers.properties  Reuse, Image-Präfix
 │   └── opencode/
 │       ├── opencode.json      globale OpenCode-Config
 │       └── AGENTS.md          globale Arbeitsanweisungen für den Agenten
 └── scripts/
     ├── post-create.sh         einmalig nach Container-Erstellung
     ├── post-start.sh          bei jedem Start (idempotent)
-    ├── install-ca-certs.sh    Root-CA in System- und Java-Truststore
+    ├── install-ca-certs.sh    Root-CA in System- und alle JDK-Truststores
     ├── configure-git.sh       Identität, Token, SSH-Keys
+    ├── configure-gpg.sh       Commit-Signierung (GPG oder SSH)
+    ├── configure-docker.sh    daemon.json des inneren Daemons
     ├── link-configs.sh        Config-Mounts zu Gradle-/OpenCode-Pfaden
     ├── clone-repos.sh         repositories.yaml auswerten
+    ├── gitlab.sh              GitLab-API, Gruppen-Discovery, glab
     └── devkit.sh              CLI im Container (devkit ...)
+
+.gitlab-ci.yml                 baut das Image zentral und pusht es in die Registry
 ```
 
 Pfade im Container:
@@ -172,7 +184,7 @@ einkommentieren (nur wenn `~/.ssh` existiert):
 
 Die Keys werden im `postCreate` mit korrekten Rechten nach `~/.ssh` kopiert.
 
-**HTTPS-Token** – auf dem Host setzen (siehe Abschnitt 11), dann wird ein
+**HTTPS-Token** – auf dem Host setzen (siehe Abschnitt "Host-Umgebungsvariablen"), dann wird ein
 Git-Credential-Helper eingerichtet:
 
 ```
@@ -193,7 +205,7 @@ vorbereitete Anbindungen für **Package Registry** und **Container Registry**.
 
 ### 6.1 Zugang einrichten
 
-Auf dem Host setzen (siehe Abschnitt 11), im Container sind die Werte dann aktiv:
+Auf dem Host setzen (siehe Abschnitt "Host-Umgebungsvariablen"), im Container sind die Werte dann aktiv:
 
 ```
 GITLAB_HOST   = gitlab.example.com
@@ -216,7 +228,7 @@ damit **nicht** in den Remote-URLs der Repositories. Prüfen:
 devkit gitlab status
 ```
 
-> Bei einer internen CA zuerst Abschnitt 7 abarbeiten: ohne die Root-CA im
+> Bei einer internen CA zuerst den Abschnitt "Root-CA hinterlegen" abarbeiten: ohne die Root-CA im
 > Truststore scheitern sowohl `git clone` als auch die API-Aufrufe mit TLS-Fehler.
 
 ### 6.2 Ganze Gruppen klonen statt Repos einzeln pflegen
@@ -279,7 +291,7 @@ docker pull registry.gitlab.example.com/platform/services/order-service:latest
 Abweichender Registry-Host: `GITLAB_REGISTRY` auf dem Host setzen. Nutzt die
 Registry ein eigenes Zertifikat, zusätzlich
 `"DEVKIT_DOCKER_REGISTRIES": "registry.gitlab.example.com"` in `containerEnv`
-eintragen (siehe Abschnitt 7).
+eintragen (siehe Abschnitt "Root-CA hinterlegen").
 
 ### 6.5 Maven Package Registry als Gradle-Repository
 
@@ -301,7 +313,7 @@ Container.
 ### 6.6 SSH statt HTTPS
 
 `gitlab.protocol: ssh` in `repositories.yaml` setzen und den SSH-Mount in
-`devcontainer.json` einkommentieren (Abschnitt 5, „Git-Zugang"). Der Hostkey der
+`devcontainer.json` einkommentieren (Abschnitt "Repositories konfigurieren", Unterpunkt "Git-Zugang"). Der Hostkey der
 Instanz wird beim Start automatisch nach `~/.ssh/known_hosts` übernommen
 (`devkit gitlab known-hosts`) – ohne ihn würde `git clone` mit einer interaktiven
 Rückfrage hängen bleiben. Abweichender SSH-Port: `GITLAB_SSH_PORT`.
@@ -351,7 +363,64 @@ unter `containerEnv` setzen:
 
 ---
 
-## 8. Gradle-Konfiguration mounten
+## 8. Mehrere JDKs und Gradle-Toolchains
+
+In einer gewachsenen Microservice-Landschaft laufen selten alle Services auf
+derselben Java-Version. Das Image bringt deshalb mehrere Temurin-JDKs mit:
+
+| Pfad | Inhalt |
+|---|---|
+| `/usr/lib/jvm/temurin-17` | Temurin 17 |
+| `/usr/lib/jvm/temurin-21` | Temurin 21 |
+| `/usr/lib/jvm/default` | Symlink auf die Standardversion (`JAVA_DEFAULT`) |
+
+`JAVA_HOME` und der `PATH` zeigen auf `default`. Welche Versionen installiert
+werden, steuert `build.args` in `devcontainer.json`:
+
+```jsonc
+"JAVA_VERSIONS": "17 21",   // durch Leerzeichen getrennt, beliebig erweiterbar
+"JAVA_DEFAULT": "21"        // muss in JAVA_VERSIONS enthalten sein
+```
+
+Übersicht im Container:
+
+```bash
+devkit java
+```
+
+### Toolchain statt JAVA_HOME
+
+Der saubere Weg pro Service ist die Gradle-Toolchain – sie hält die Java-Version
+im Build fest, unabhängig davon, womit Gradle gestartet wurde:
+
+```kotlin
+java {
+    toolchain { languageVersion.set(JavaLanguageVersion.of(17)) }
+}
+```
+
+Damit Gradle die im Image liegenden JDKs findet (und **nicht** versucht, eines
+herunterzuladen), müssen die Pfade in `gradle.properties` stehen – die Vorlage
+enthält sie bereits:
+
+```properties
+org.gradle.java.installations.paths=/usr/lib/jvm/temurin-17,/usr/lib/jvm/temurin-21
+org.gradle.java.installations.auto-download=false
+```
+
+Für einen einzelnen Aufruf geht auch:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/temurin-17 ./gradlew build
+```
+
+> Die Root-CA wird in die Truststores **aller** installierten JDKs importiert.
+> Sonst schlägt ein Build fehl, sobald ein Service per Toolchain auf ein anderes
+> JDK wechselt.
+
+---
+
+## 9. Gradle-Konfiguration mounten
 
 Das Verzeichnis `.devcontainer/config/gradle/` wird read-only gemountet und im
 Container verlinkt:
@@ -384,7 +453,7 @@ Volume und übersteht Rebuilds.
 
 ---
 
-## 9. OpenCode-Konfiguration mounten
+## 10. OpenCode-Konfiguration mounten
 
 | Quelle | Ziel im Container |
 |---|---|
@@ -418,7 +487,7 @@ opencode
 
 ---
 
-## 10. Konfiguration von außerhalb des Repos mounten
+## 11. Konfiguration von außerhalb des Repos mounten
 
 In `devcontainer.json` sind unter `mounts` vorbereitete, auskommentierte Zeilen
 enthalten. Damit lässt sich z. B. ein zentrales Firmen-Config-Verzeichnis
@@ -435,7 +504,7 @@ Wichtig: Backslashes in JSON verdoppeln, oder Forward-Slashes verwenden.
 
 ---
 
-## 11. Host-Umgebungsvariablen
+## 12. Host-Umgebungsvariablen
 
 Werden über `remoteEnv` in den Container gereicht; nicht gesetzte Variablen
 werden ignoriert.
@@ -448,6 +517,8 @@ werden ignoriert.
 | `DEVKIT_GIT_HOST`, `DEVKIT_GIT_TOKEN`, `DEVKIT_GIT_TOKEN_USER` | generischer HTTPS-Credential-Helper (andere Hoster) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Proxy für Container, Git und Gradle |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | OpenCode-Provider |
+| `DEVKIT_GIT_SIGN`, `DEVKIT_GIT_SIGN_FORMAT` | Commit-Signierung ein/aus, `openpgp` oder `ssh` |
+| `DEVKIT_GPG_SIGNING_KEY`, `DEVKIT_SSH_SIGNING_KEY` | zu verwendender Signaturschlüssel |
 
 Dauerhaft setzen (PowerShell, danach Terminal/IDE neu starten):
 
@@ -460,7 +531,7 @@ Dauerhaft setzen (PowerShell, danach Terminal/IDE neu starten):
 
 ---
 
-## 12. Docker-in-Docker
+## 13. Docker-in-Docker
 
 Im Container läuft ein **eigener** Docker-Daemon; er ist vom Host-Docker
 isoliert. Container, die hier gestartet werden, erscheinen nicht in Docker
@@ -483,9 +554,164 @@ Host-Daemon, Testcontainers-Port-Mapping verhält sich dann anders): in
 `"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}`,
 `"privileged": true` entfernen und das Volume `...-docker` löschen.
 
+### Registry-Mirror gegen Docker-Hub-Rate-Limits
+
+Im Firmennetz ist das die Stelle, an der Docker-in-Docker als Erstes bricht:
+anonyme Pulls gegen Docker Hub laufen in `toomanyrequests`, oder der Proxy
+blockt sie ganz. Abhilfe – Vorlage kopieren und anpassen:
+
+```bash
+cp .devcontainer/config/docker/daemon.json.example    .devcontainer/config/docker/daemon.json
+```
+
+```jsonc
+{
+  "registry-mirrors": ["https://nexus.example.com:8082"],
+  "insecure-registries": [],
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+```
+
+Die Datei wird beim Start mit der Konfiguration des `docker-in-docker`-Features
+zusammengeführt (unsere Werte gewinnen) und per `SIGHUP` nachgeladen – für
+`registry-mirrors` und `insecure-registries` reicht das, ein Rebuild ist nicht
+nötig. Anwenden und prüfen:
+
+```bash
+devkit docker
+```
+
+> `registry-mirrors` gilt **nur** für Docker Hub und setzt einen Pull-Through-
+> Cache voraus, der die Registry-API auf Host-Ebene anbietet (Nexus, Artifactory,
+> Harbor). GitLabs **Dependency Proxy** ist kein gültiger `registry-mirror` –
+> dort wird der Imagename präfixiert, siehe nächster Abschnitt.
+
+### Testcontainers
+
+`.devcontainer/config/testcontainers/testcontainers.properties` wird beim Start
+nach `~/.testcontainers.properties` **kopiert** (nicht verlinkt – Testcontainers
+schreibt selbst hinein). Vorbelegt ist:
+
+```properties
+testcontainers.reuse.enable=true
+```
+
+Für die Docker-Hub-Umleitung – inklusive der internen Helfer-Images (Ryuk, Tiny
+Image) – zusätzlich eine der beiden Zeilen aktivieren:
+
+```properties
+# GitLab Dependency Proxy (Gruppenebene, docker login erforderlich)
+hub.image.name.prefix=gitlab.example.com/meine-gruppe/dependency_proxy/containers/
+# oder Nexus/Artifactory/Harbor
+hub.image.name.prefix=nexus.example.com:8082/
+```
+
+Benötigt Testcontainers 1.19+. Der Docker-Daemon selbst muss nicht konfiguriert
+werden – Testcontainers findet ihn im Container über `/var/run/docker.sock`.
+Nach Änderungen: `devkit config link`.
+
 ---
 
-## 13. devkit-Befehle
+## 14. Commit-Signierung
+
+Verlangt eure GitLab-Instanz signierte Commits, richtet der Container das beim
+Start selbst ein. Zwei Varianten, umgeschaltet über `DEVKIT_GIT_SIGN_FORMAT`:
+
+### GPG (Default)
+
+Schlüsselbund des Hosts einbinden – in `devcontainer.json` unter `mounts`:
+
+```jsonc
+,"source=${localEnv:USERPROFILE}${localEnv:HOME}/.gnupg,target=/opt/devkit/gnupg,type=bind,readonly"
+```
+
+Der Inhalt wird nach `~/.gnupg` **kopiert** (700/600), weil `gpg` strikte Rechte
+verlangt und in den Socket-Pfad schreibt – ein Bind-Mount taugt dafür nicht.
+Zusätzlich wird `pinentry-tty` als Pinentry gesetzt, damit die Passphrase-Abfrage
+im Terminal funktioniert.
+
+Gibt es genau einen geheimen Schlüssel, wird er automatisch verwendet. Bei
+mehreren:
+
+```
+DEVKIT_GPG_SIGNING_KEY=<Key-ID, Fingerprint oder E-Mail>
+```
+
+### SSH
+
+Ohne GPG, signiert mit dem vorhandenen SSH-Key (Git 2.34+):
+
+```
+DEVKIT_GIT_SIGN_FORMAT=ssh
+DEVKIT_SSH_SIGNING_KEY=/home/vscode/.ssh/id_ed25519.pub   # optional, sonst automatisch
+```
+
+Zusätzlich wird eine `allowed_signers`-Datei angelegt, damit
+`git log --show-signature` auch lokal verifizieren kann. Der öffentliche
+Schlüssel muss in GitLab unter *Preferences ▸ SSH Keys* als **Signing Key**
+hinterlegt sein.
+
+### Steuerung
+
+| Variable | Wirkung |
+|---|---|
+| `DEVKIT_GIT_SIGN` | `false` = konfigurieren, aber nicht erzwingen (Default `true`) |
+| `DEVKIT_GIT_SIGN_FORMAT` | `openpgp` (Default) oder `ssh` |
+| `DEVKIT_GPG_SIGNING_KEY` | Schlüssel für OpenPGP |
+| `DEVKIT_SSH_SIGNING_KEY` | Pfad zum öffentlichen SSH-Key |
+
+```bash
+devkit sign      # Signierung neu einrichten
+devkit doctor    # zeigt aktive Signierung und Schlüssel
+```
+
+---
+
+## 15. Vorgebautes Image aus der GitLab CI
+
+Ohne Prebuild baut jede:r Entwickler:in das ~2,6 GB große Image selbst – hinter
+einem Proxy schnell 15 Minuten. `.gitlab-ci.yml` im Projektwurzelverzeichnis
+baut es stattdessen einmal zentral:
+
+| Job | Wann | Was |
+|---|---|---|
+| `lint` | jeder Push / MR | shellcheck, YAML-/JSON-Prüfung, `devcontainer read-configuration` |
+| `build` | MR (nur bauen), Default-Branch und Tags (bauen + pushen), Schedule | `devcontainer build` inklusive Features |
+| `smoke-test` | nach dem Push | JDKs, Gradle, OpenCode, Node, Pfade im gebauten Image |
+
+Einmalige Einrichtung unter *Settings ▸ CI/CD ▸ Variables*:
+
+| Variable | Typ | Zweck |
+|---|---|---|
+| `CORPORATE_ROOT_CA` | File | PEM der Firmen-Root-CA – ohne sie scheitern die Downloads im Build hinter TLS-Inspection |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Variable | falls der Runner einen Proxy braucht |
+
+Der Runner muss privilegierte Container erlauben (Docker-in-Docker).
+
+### Im Team verwenden
+
+Der schnellste Weg ohne zweite Konfigurationsdatei ist das Image als
+**Layer-Cache** – in `devcontainer.json` einkommentieren:
+
+```jsonc
+"build": {
+  "dockerfile": "Dockerfile",
+  "context": ".",
+  "cacheFrom": "registry.example.com/platform/devkit:latest"
+}
+```
+
+Der lokale Build läuft dann durch, zieht aber alle Layer aus der Registry statt
+sie neu zu bauen. Alternativ komplett auf das fertige Image umstellen: `build`
+durch `"image": "registry.example.com/platform/devkit:latest"` ersetzen und den
+`features`-Block entfernen – die Features sind bereits eingebacken.
+
+> Ein Schedule (*CI/CD ▸ Schedules*, z. B. wöchentlich) hält Basis-Image und
+> Paketstand aktuell, ohne dass jemand etwas committen muss.
+
+---
+
+## 16. devkit-Befehle
 
 ```
 devkit doctor           JDK, Gradle, OpenCode, Docker, Truststore, Volumes prüfen
@@ -494,21 +720,26 @@ devkit repos update     alle Repositories aktualisieren
 devkit repos list       Status je Repository
 devkit certs install    Root-CA (neu) einlesen
 devkit certs list       installierte Zertifikate anzeigen
-devkit config link      Gradle-/OpenCode-Config neu verknüpfen
+devkit config link      Gradle-/OpenCode-/Testcontainers-Config neu übernehmen
 devkit config show      aktive Konfigurationspfade anzeigen
+devkit java             installierte JDKs anzeigen
+devkit docker           daemon.json des inneren Daemons anwenden/anzeigen
+devkit sign             Commit-Signierung (neu) einrichten
+devkit gitlab status    Verbindung zur GitLab-Instanz prüfen
 ```
 
 ---
 
-## 14. Anpassen
+## 17. Anpassen
 
 | Ziel | Vorgehen |
 |---|---|
-| Andere JDK-Version | `build.args.JAVA_VERSION` in `devcontainer.json`; zusätzlich `JAVA_HOME` in `containerEnv` und im `Dockerfile` (`ENV JAVA_HOME`) auf `temurin-<version>` anpassen |
+| Weitere JDK-Version | `build.args.JAVA_VERSIONS` ergänzen (z. B. `"17 21 25"`) und den Pfad in `gradle.properties` nachtragen |
+| Andere Standard-JDK | `build.args.JAVA_DEFAULT` – `JAVA_HOME` folgt automatisch über `/usr/lib/jvm/default` |
 | Gradle-Version pinnen | `build.args.GRADLE_VERSION` von `current` auf z. B. `8.14.3` setzen |
 | OpenCode-Version pinnen | `build.args.OPENCODE_VERSION` auf eine konkrete Version setzen |
 | Node-Version | `features` -> `node:1` -> `version` (`lts` oder z. B. `22`) |
-| Zusätzliches Tooling | Pakete im `Dockerfile` (Abschnitt 2) ergänzen oder ein Feature in `devcontainer.json` hinzufügen |
+| Zusätzliches Tooling | Pakete im `Dockerfile` (Schritt 2) ergänzen oder ein Feature in `devcontainer.json` hinzufügen |
 | Weitere Ports | `forwardPorts` / `portsAttributes` erweitern |
 | Zeitzone | `build.args.TZ` |
 
@@ -522,7 +753,7 @@ bekommen. Zum Aktualisieren löschen und den Container neu bauen.
 
 ---
 
-## 15. Troubleshooting
+## 18. Troubleshooting
 
 **`docker info` schlägt direkt nach dem Start fehl**
 Der innere Daemon braucht einige Sekunden. Bleibt es dabei: prüfen, ob
@@ -536,7 +767,7 @@ CA vor dem Rebuild in `.devcontainer/certs/` liegen.
 
 **Repositories werden nicht geklont**
 `devkit repos list` zeigt den Status. Bei privaten Repos Zugangsdaten prüfen
-(Abschnitt 5) – ohne Credentials bricht `git clone` ab.
+(Abschnitt "Repositories konfigurieren") – ohne Credentials bricht `git clone` ab.
 
 **IntelliJ indexiert bei jedem Start neu**
 Das Volume `...-jetbrains` muss existieren und darf nicht gelöscht werden;
@@ -549,6 +780,27 @@ oder der Docker-Engine mehr RAM zuweisen (Docker Desktop > Settings > Resources)
 **git meldet "dubious ownership"**
 Sollte durch `safe.directory=*` abgedeckt sein; sonst
 `bash /workspaces/devkit/.devcontainer/scripts/configure-git.sh` erneut ausführen.
+
+**`docker pull` bzw. Testcontainers meldet `toomanyrequests`**
+Docker-Hub-Rate-Limit. Registry-Mirror in
+`.devcontainer/config/docker/daemon.json` eintragen und/oder
+`hub.image.name.prefix` in
+`.devcontainer/config/testcontainers/testcontainers.properties` setzen –
+siehe Abschnitt "Docker-in-Docker". Danach `devkit docker` bzw.
+`devkit config link`.
+
+**Gradle will ein JDK herunterladen (`No matching toolchain / auto-download`)**
+Die angeforderte Toolchain-Version ist nicht im Image. Entweder die Version zu
+`build.args.JAVA_VERSIONS` hinzufügen und neu bauen, oder den Pfad in
+`org.gradle.java.installations.paths` ergänzen. `devkit java` zeigt, was da ist.
+
+**Signierter Commit schlägt fehl (`gpg failed to sign the data`)**
+Meist fehlt das TTY für die Passphrase-Abfrage: in der Shell
+`export GPG_TTY=$(tty)` (wird über `/etc/profile.d` normalerweise gesetzt) und
+`echo test | gpg --clearsign` zum Prüfen. Bei Schlüsseln ohne Passphrase auf dem
+Host reicht der Mount; sonst ist ein `gpg --card-status` bzw. eine
+Agent-Weiterleitung nötig. Alternative ohne GPG:
+`DEVKIT_GIT_SIGN_FORMAT=ssh`.
 
 **Skripte scheitern mit `bad interpreter: /bin/bash^M`**
 Die Dateien wurden mit CRLF ausgecheckt. `.gitattributes` erzwingt LF –

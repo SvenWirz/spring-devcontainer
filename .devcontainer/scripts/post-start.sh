@@ -6,6 +6,7 @@
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
@@ -16,6 +17,10 @@ fi
 
 # Neu hinzugefügte Zertifikate übernehmen (idempotent).
 bash "$SCRIPT_DIR/install-ca-certs.sh" || warn "CA-Installation fehlgeschlagen."
+
+# Registry-Mirror des inneren Daemons anwenden. Muss vor dem ersten Pull
+# passieren, sonst laufen Testcontainers-Pulls doch gegen Docker Hub.
+bash "$SCRIPT_DIR/configure-docker.sh" >/dev/null || warn "Docker-Daemon-Konfiguration nicht angewendet."
 
 # Config-Links erneuern (Mount-Inhalt kann sich geändert haben).
 bash "$SCRIPT_DIR/link-configs.sh" >/dev/null || warn "Config-Verknüpfung fehlgeschlagen."

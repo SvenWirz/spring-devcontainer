@@ -1,0 +1,28 @@
+{
+  "_kommentar": [
+    "Konfiguration des INNEREN Docker-Daemons (Docker-in-Docker).",
+    "Aktivieren: Datei nach daemon.json kopieren (im selben Verzeichnis).",
+    "Sie wird beim Start mit der Konfiguration des docker-in-docker-Features",
+    "zusammengefuehrt und per SIGHUP nachgeladen - kein Rebuild noetig.",
+    "",
+    "registry-mirrors gilt NUR fuer Docker Hub (docker.io) und setzt einen",
+    "Pull-Through-Cache voraus, der die Registry-API auf Host-Ebene anbietet:",
+    "Nexus (Docker-Proxy-Repository), Artifactory, Harbor.",
+    "GitLabs Dependency Proxy ist KEIN gueltiger registry-mirror - dort wird",
+    "der Imagename praefixiert; dafuer siehe config/testcontainers/."
+  ],
+
+  "registry-mirrors": [
+    "https://nexus.example.com:8082"
+  ],
+
+  "insecure-registries": [],
+
+  "features": { "buildkit": true },
+
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+
+  "max-concurrent-downloads": 6,
+  "max-concurrent-uploads": 6
+}

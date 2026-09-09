@@ -2,13 +2,15 @@
 #
 # Installiert alle Root-/Intermediate-CAs aus $DEVKIT_CERTS in
 #   * den System-Truststore (/usr/local/share/ca-certificates -> ca-certificates.crt)
-#   * den Truststore der JVM ($JAVA_HOME/lib/security/cacerts)
+#   * die Truststores ALLER installierten JDKs
+#     (/usr/lib/jvm/temurin-*/lib/security/cacerts)
 #
 # Idempotent: kann bei jedem Container-Start erneut laufen.
 # Zertifikatsbündel (mehrere PEM-Blöcke in einer Datei) werden aufgeteilt,
 # weil keytool pro Import genau ein Zertifikat erwartet.
 
 set -euo pipefail
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -72,32 +74,51 @@ done
 as_root update-ca-certificates >/dev/null
 ok "$count Zertifikat(e) im System-Truststore installiert."
 
-# --- 3) Java-Truststore ----------------------------------------------------
-JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/temurin-21}"
-KEYSTORE="$JAVA_HOME/lib/security/cacerts"
+# --- 3) Java-Truststores ---------------------------------------------------
+# Es sind mehrere JDKs installiert (siehe Dockerfile, JAVA_VERSIONS). Jedes
+# bringt seinen eigenen cacerts mit - die CA muss in alle, sonst schlaegt ein
+# Build fehl, sobald ein Service per Gradle-Toolchain auf ein anderes JDK geht.
 STOREPASS="${DEVKIT_TRUSTSTORE_PASS:-changeit}"
 
-if [ ! -f "$KEYSTORE" ]; then
-    warn "Java-Truststore $KEYSTORE nicht gefunden - JVM-Import übersprungen."
+keystores=()
+seen=""
+for jh in /usr/lib/jvm/temurin-* "${JAVA_HOME:-}"; do
+    [ -n "$jh" ] || continue
+    ks="$jh/lib/security/cacerts"
+    [ -f "$ks" ] || continue
+    real="$(readlink -f "$ks")"
+    case " $seen " in *" $real "*) continue ;; esac
+    seen="$seen $real"
+    keystores+=("$ks")
+done
+
+if [ ${#keystores[@]} -eq 0 ]; then
+    warn "Kein Java-Truststore gefunden - JVM-Import übersprungen."
     exit 0
 fi
 
-imported=0
-for c in "$WORK_DIR"/*.crt; do
-    alias="devkit-$(basename "$c" .crt)"
-    # Alten Eintrag entfernen, damit ein ausgetauschtes Zertifikat wirklich greift.
-    as_root keytool -delete -alias "$alias" -keystore "$KEYSTORE" \
-        -storepass "$STOREPASS" >/dev/null 2>&1 || true
-    if as_root keytool -importcert -noprompt -trustcacerts -alias "$alias" \
-        -file "$c" -keystore "$KEYSTORE" -storepass "$STOREPASS" >/dev/null 2>&1; then
-        imported=$((imported + 1))
-        subject="$(openssl x509 -in "$c" -noout -subject 2>/dev/null | sed 's/^subject=//')"
-        detail "$alias  ${subject:-}"
-    else
-        warn "Import von $(basename "$c") in den Java-Truststore fehlgeschlagen."
-    fi
+for ks in "${keystores[@]}"; do
+    imported=0
+    for c in "$WORK_DIR"/*.crt; do
+        alias="devkit-$(basename "$c" .crt)"
+        # Alten Eintrag entfernen, damit ein ausgetauschtes Zertifikat wirklich greift.
+        as_root keytool -delete -alias "$alias" -keystore "$ks" \
+            -storepass "$STOREPASS" >/dev/null 2>&1 || true
+        if as_root keytool -importcert -noprompt -trustcacerts -alias "$alias" \
+            -file "$c" -keystore "$ks" -storepass "$STOREPASS" >/dev/null 2>&1; then
+            imported=$((imported + 1))
+        else
+            warn "Import von $(basename "$c") in $ks fehlgeschlagen."
+        fi
+    done
+    jdk="$(basename "$(dirname "$(dirname "$(dirname "$ks")")")")"
+    ok "$imported Zertifikat(e) im Java-Truststore ($jdk)."
 done
-ok "$imported Zertifikat(e) im Java-Truststore ($KEYSTORE)."
+
+for c in "$WORK_DIR"/*.crt; do
+    subject="$(openssl x509 -in "$c" -noout -subject 2>/dev/null | sed 's/^subject=//')"
+    detail "devkit-$(basename "$c" .crt)  ${subject:-}"
+done
 
 # --- 4) Hinweis für den inneren Docker-Daemon ------------------------------
 # Docker liest Registry-CAs aus dem System-Store; für Registries mit eigenem

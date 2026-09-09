@@ -8,16 +8,20 @@
 #   devkit config link       Gradle-/OpenCode-Config neu verknüpfen
 #   devkit config show       aktive Pfade und Mounts anzeigen
 #   devkit gitlab [status|login|registry|known-hosts|groups <pfad>]
+#   devkit java              installierte JDKs anzeigen
+#   devkit docker            Registry-Mirror anwenden/anzeigen
+#   devkit sign              Commit-Signierung (neu) einrichten
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 # shellcheck source=gitlab.sh
 source "$SCRIPT_DIR/gitlab.sh"
 
 usage() {
-    sed -n '3,13p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \?//'
+    sed -n '3,16p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \?//'
 }
 
 check() { # check <label> <kommando...>
@@ -43,6 +47,20 @@ doctor() {
     check "yq"       yq --version
     check "jq"       jq --version
 
+    section "Installierte JDKs"
+    for jh in /usr/lib/jvm/temurin-*; do
+        [ -d "$jh" ] || continue
+        case "$jh" in *-jdk-*) continue ;; esac
+        marker="  "
+        [ "$(readlink -f "$jh")" = "$(readlink -f "${JAVA_HOME:-/usr/lib/jvm/default}")" ] && marker=" *"
+        printf ' %s %-28s %s
+' "$marker" "$jh"             "$("$jh/bin/java" -version 2>&1 | head -n1)"
+    done
+    printf '  %s· %-28s %s%s
+' "$_c_dim" "JAVA_HOME" "${JAVA_HOME:-}" "$_c_reset"
+    printf '  %s· %-28s %s%s
+' "$_c_dim" "(* = Standard)" "" "$_c_reset"
+
     section "Docker-in-Docker"
     if docker info >/dev/null 2>&1; then
         printf '  %s✓%s %-14s %s\n' "$_c_green" "$_c_reset" "Daemon" \
@@ -53,6 +71,25 @@ doctor() {
         printf '  %s✗%s %-14s %s\n' "$_c_red" "$_c_reset" "Daemon" \
             "nicht erreichbar - startet ggf. noch (docker info)"
     fi
+
+    if [ -f /etc/docker/daemon.json ]; then
+        local m
+        m="$(as_root cat /etc/docker/daemon.json 2>/dev/null | jq -r '."registry-mirrors" // [] | join(", ")' 2>/dev/null)"
+        [ -n "$m" ] && printf '  %s·%s %-14s %s
+' "$_c_dim" "$_c_reset" "Mirror" "$m"
+    fi
+    if [ -f "$HOME/.testcontainers.properties" ]; then
+        local tcp
+        tcp="$(grep -E '^hub.image.name.prefix=' "$HOME/.testcontainers.properties" | cut -d= -f2- || true)"
+        printf '  %s·%s %-14s %s
+' "$_c_dim" "$_c_reset" "Testcontainers"             "${tcp:-kein Image-Praefix}"
+    fi
+
+    section "Git & Signierung"
+    printf '  %-16s %s
+' "Identitaet"         "$(git config --global user.name 2>/dev/null || echo '-') <$(git config --global user.email 2>/dev/null || echo '-')>"
+    printf '  %-16s %s
+' "Signierung"         "$(git config --global commit.gpgsign 2>/dev/null || echo 'aus') ($(git config --global gpg.format 2>/dev/null || echo 'openpgp'), Key: $(git config --global user.signingkey 2>/dev/null || echo '-'))"
 
     section "Truststore"
     local sys_dir=/usr/local/share/ca-certificates/devkit
@@ -114,6 +151,26 @@ case "$cmd" in
             *) die "Unbekannt: devkit config $1" ;;
         esac ;;
     gitlab)  bash "$SCRIPT_DIR/gitlab.sh" "$@" ;;
+    java)
+        section "Installierte JDKs"
+        for jh in /usr/lib/jvm/temurin-*; do
+            [ -d "$jh" ] || continue
+            case "$jh" in *-jdk-*) continue ;; esac
+            printf '  %-28s %s
+' "$jh" "$("$jh/bin/java" -version 2>&1 | head -n1)"
+        done
+        printf '
+  Aktuell: JAVA_HOME=%s
+' "${JAVA_HOME:-}"
+        printf '  Fuer einen einzelnen Build:  JAVA_HOME=/usr/lib/jvm/temurin-17 ./gradlew build
+'
+        printf '  Dauerhaft pro Projekt:       Gradle-Toolchain in build.gradle.kts setzen
+'
+        printf '  Standard im Image aendern:   build.args.JAVA_DEFAULT in devcontainer.json
+'
+        ;;
+    docker)  bash "$SCRIPT_DIR/configure-docker.sh" ;;
+    sign)    bash "$SCRIPT_DIR/configure-gpg.sh" ;;
     -h|--help|help) usage ;;
     *) err "Unbekannter Befehl: $cmd"; usage; exit 1 ;;
 esac

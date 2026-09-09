@@ -6,6 +6,7 @@
 # Alle Werte sind optional; nicht gesetzte Variablen werden ignoriert.
 
 set -uo pipefail
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=gitlab.sh

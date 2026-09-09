@@ -1,0 +1,159 @@
+# ---------------------------------------------------------------------------
+# Baut das Dev-Container-Image zentral und legt es in der GitLab Container
+# Registry ab. Entwickler:innen ziehen es dann als Layer-Cache (oder direkt),
+# statt lokal 10+ Minuten zu bauen.
+#
+# Einmalige Einrichtung (Settings > CI/CD > Variables):
+#
+#   CORPORATE_ROOT_CA   Typ "File", Inhalt = PEM der Firmen-Root-CA.
+#                       Noetig, wenn der Runner hinter TLS-Inspection haengt -
+#                       sonst scheitern Adoptium-, Gradle- und OpenCode-Downloads.
+#   HTTP_PROXY /
+#   HTTPS_PROXY /
+#   NO_PROXY            falls der Runner einen Proxy braucht (optional)
+#
+# Der Runner muss privilegierte Container erlauben (Docker-in-Docker).
+#
+# Danach in .devcontainer/devcontainer.json einkommentieren und anpassen:
+#   "build": { "cacheFrom": "registry.example.com/<gruppe>/<projekt>/devkit:latest" }
+# ---------------------------------------------------------------------------
+
+stages:
+  - validate
+  - build
+  - verify
+
+variables:
+  DEVKIT_IMAGE: "$CI_REGISTRY_IMAGE/devkit"
+  DIND_IMAGE: "docker:27-dind"
+  BUILDER_IMAGE: "docker:27-cli"
+  # Docker-in-Docker fuer den Build selbst (GitLab-Standardkonfiguration).
+  DOCKER_HOST: "tcp://docker:2376"
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: "/certs/client"
+  DOCKER_BUILDKIT: "1"
+
+# --- Wiederverwendbarer Baustein: Docker-CLI + Node + devcontainer-CLI ------
+.devcontainer-cli:
+  image: $BUILDER_IMAGE
+  services:
+    - name: $DIND_IMAGE
+      alias: docker
+  before_script:
+    - apk add --no-cache nodejs npm git bash ca-certificates jq >/dev/null
+    - |
+      # Firmen-Root-CA fuer den Runner UND fuer den Image-Build bereitstellen.
+      if [ -n "${CORPORATE_ROOT_CA:-}" ] && [ -f "$CORPORATE_ROOT_CA" ]; then
+        cp "$CORPORATE_ROOT_CA" /usr/local/share/ca-certificates/corporate-root-ca.crt
+        update-ca-certificates
+        cp "$CORPORATE_ROOT_CA" .devcontainer/certs/corporate-root-ca.crt
+        echo "Root-CA uebernommen."
+      fi
+    - npm install -g @devcontainers/cli@latest >/dev/null
+    - docker info >/dev/null
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# ---------------------------------------------------------------------------
+# 1) Statische Pruefung - laeuft bei jedem Push, dauert Sekunden.
+# ---------------------------------------------------------------------------
+lint:
+  stage: validate
+  image: alpine:3.20
+  script:
+    - apk add --no-cache shellcheck jq yq bash nodejs npm git >/dev/null
+    - echo "== Shell-Skripte =="
+    - shellcheck -x -S warning .devcontainer/scripts/*.sh
+    - echo "== YAML =="
+    - yq -e . .devcontainer/config/repositories.yaml > /dev/null
+    - yq -e . .gitlab-ci.yml > /dev/null
+    - echo "== JSON =="
+    - jq -e . .devcontainer/config/opencode/opencode.json > /dev/null
+    - jq -e . .devcontainer/devcontainer-lock.json > /dev/null
+    - echo "== devcontainer.json (JSONC, inkl. Feature-Aufloesung) =="
+    - npm install -g @devcontainers/cli@latest > /dev/null
+    - devcontainer read-configuration --workspace-folder . > /dev/null
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# ---------------------------------------------------------------------------
+# 2) Image bauen. Auf dem Default-Branch wird gepusht, im Merge Request nur
+#    gebaut - so faellt ein kaputtes Dockerfile vor dem Merge auf.
+#
+#    `devcontainer build` backt Dockerfile UND Features (docker-in-docker,
+#    node) in ein einziges Image.
+# ---------------------------------------------------------------------------
+build:
+  extends: .devcontainer-cli
+  stage: build
+  timeout: 45m
+  script:
+    - |
+      set -e
+      ARGS="--workspace-folder . --cache-from $DEVKIT_IMAGE:latest"
+      ARGS="$ARGS --image-name $DEVKIT_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        ARGS="$ARGS --image-name $DEVKIT_IMAGE:latest"
+      fi
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        ARGS="$ARGS --image-name $DEVKIT_IMAGE:$CI_COMMIT_TAG"
+      fi
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ -n "${CI_COMMIT_TAG:-}" ]; then
+        ARGS="$ARGS --push"
+        echo "Baue und pushe $DEVKIT_IMAGE"
+      else
+        echo "Baue $DEVKIT_IMAGE (ohne push)"
+      fi
+
+      # shellcheck disable=SC2086
+      devcontainer build $ARGS
+    - |
+      if docker image inspect "$DEVKIT_IMAGE:$CI_COMMIT_SHORT_SHA" > /dev/null 2>&1; then
+        docker image inspect "$DEVKIT_IMAGE:$CI_COMMIT_SHORT_SHA" \
+          --format 'Image: {{.Id}}  Groesse: {{.Size}} Bytes'
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - .devcontainer/**/*
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    # Woechentlich per Schedule neu bauen, damit Basis-Image und Paketstand
+    # aktuell bleiben (Security-Updates im Debian-Unterbau).
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+# ---------------------------------------------------------------------------
+# 3) Smoke-Test des gepushten Images.
+# ---------------------------------------------------------------------------
+smoke-test:
+  extends: .devcontainer-cli
+  stage: verify
+  needs: ["build"]
+  script:
+    - IMG="$DEVKIT_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker pull "$IMG"
+    - |
+      docker run --rm "$IMG" bash -lc '
+        set -e
+        echo "== JDKs =="
+        for jh in /usr/lib/jvm/temurin-*; do "$jh/bin/java" -version; done
+        test -L /usr/lib/jvm/default
+        echo "== Toolchain =="
+        gradle --version | grep "^Gradle"
+        opencode --version
+        node --version && npm --version
+        yq --version && jq --version
+        glab --version || echo "WARN: glab fehlt (nicht build-kritisch)"
+        echo "== Erwartete Pfade =="
+        test -d /src
+        test -x /usr/local/bin/opencode
+        test -x /usr/local/bin/gradle
+        echo OK
+      '
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"

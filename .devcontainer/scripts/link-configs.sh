@@ -13,6 +13,7 @@
 # liegen weiterhin auf beschreibbaren Volumes.
 
 set -uo pipefail
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -63,6 +64,20 @@ fi
 
 link "$DEVKIT_CONFIG/opencode/AGENTS.md" "$OC_CONFIG_DIR/AGENTS.md" >/dev/null 2>&1 \
     && ok "OpenCode: globale AGENTS.md eingebunden."
+
+# --- Testcontainers --------------------------------------------------------
+# Bewusst kopiert statt verlinkt: Testcontainers schreibt selbst in die Datei
+# (z. B. die erkannte Docker-Client-Strategie), das ginge auf einem read-only
+# Mount schief.
+TC_SRC="$DEVKIT_CONFIG/testcontainers/testcontainers.properties"
+if [ -f "$TC_SRC" ]; then
+    install -m 0644 "$TC_SRC" "$HOME/.testcontainers.properties"
+    ok "Testcontainers: ~/.testcontainers.properties aktualisiert."
+    prefix="$(grep -E '^hub.image.name.prefix=' "$TC_SRC" | cut -d= -f2- || true)"
+    [ -n "$prefix" ] && detail "Image-Praefix: $prefix"
+else
+    log "Testcontainers: keine Konfiguration gemountet (optional)."
+fi
 
 # Weitere optionale Dateien (Agents, Commands, MCP-Definitionen) durchreichen.
 for extra in agent command plugin; do

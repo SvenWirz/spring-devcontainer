@@ -11,6 +11,7 @@
 # eine Zusammenfassung und einen Exit-Code != 0, falls etwas fehlschlug.
 
 set -uo pipefail
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=gitlab.sh

@@ -16,10 +16,14 @@ org.gradle.parallel=true
 org.gradle.caching=true
 org.gradle.configuration-cache=true
 
-# Toolchain fest auf das mitgelieferte Temurin 21 zeigen lassen.
-org.gradle.java.installations.paths=/usr/lib/jvm/temurin-21
+# Alle im Image installierten JDKs bekannt machen. Services, die per
+# java.toolchain eine andere Version anfordern (z. B. 17), finden sie darueber
+# ohne Download. Muss mit build.args.JAVA_VERSIONS zusammenpassen.
+org.gradle.java.installations.paths=/usr/lib/jvm/temurin-17,/usr/lib/jvm/temurin-21
 # Kein automatischer JDK-Download hinter restriktiven Netzen.
 org.gradle.java.installations.auto-download=false
+# Nur die oben genannten Pfade verwenden, nicht das PATH-JDK raten.
+org.gradle.java.installations.auto-detect=true
 
 # --- Firmen-Repository (Nexus/Artifactory) ---------------------------------
 # Werden von init.d/10-corporate-repository.gradle.kts ausgewertet.

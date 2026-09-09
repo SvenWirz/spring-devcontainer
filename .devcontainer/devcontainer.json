@@ -15,10 +15,18 @@
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".",
+    // Vorgebautes Image aus der GitLab Registry als Layer-Cache nutzen (siehe
+    // .gitlab-ci.yml). Spart den kompletten lokalen Build; einkommentieren und
+    // auf die eigene Registry anpassen.
+    // "cacheFrom": "registry.example.com/platform/devkit:latest",
     "args": {
       "USERNAME": "vscode",
-      // JDK-Major-Version aus dem Adoptium-APT-Repo (Temurin).
-      "JAVA_VERSION": "21",
+      // Alle zu installierenden Temurin-Versionen (Adoptium-APT), durch
+      // Leerzeichen getrennt - in einer gewachsenen Microservice-Landschaft
+      // laufen selten alle Services auf derselben Java-Version.
+      "JAVA_VERSIONS": "17 21",
+      // Version auf dem PATH; /usr/lib/jvm/default zeigt darauf.
+      "JAVA_DEFAULT": "21",
       // "current" = jeweils aktuelles Gradle-Release, sonst z. B. "8.14.3".
       "GRADLE_VERSION": "current",
       // "latest" oder eine konkrete OpenCode-Version, z. B. "0.5.0".
@@ -84,6 +92,12 @@
     // Nur einkommentieren, wenn der Pfad wirklich existiert – sonst startet der
     // Container nicht. Die Keys werden im postCreate nach ~/.ssh kopiert (chmod 600).
     // ,"source=${localEnv:USERPROFILE}${localEnv:HOME}/.ssh,target=/opt/devkit/ssh,type=bind,readonly"
+
+    // ---- Optional: GPG-Schluesselbund des Hosts fuer signierte Commits -------
+    // Wird im postCreate mit korrekten Rechten nach ~/.gnupg kopiert (gpg
+    // verlangt 700/600 und schreibt in den Socket-Pfad - ein Bind-Mount taugt
+    // dafuer nicht). Nur einkommentieren, wenn der Pfad existiert.
+    // ,"source=${localEnv:USERPROFILE}${localEnv:HOME}/.gnupg,target=/opt/devkit/gnupg,type=bind,readonly"
   ],
 
   "containerEnv": {
@@ -93,7 +107,10 @@
     "DEVKIT_CERTS": "/opt/devkit/certs",
     "DEVKIT_WORKSPACE": "/src",
 
-    "JAVA_HOME": "/usr/lib/jvm/temurin-21",
+    // Symlink auf die Standardversion (JAVA_DEFAULT). Weitere JDKs liegen
+    // unter /usr/lib/jvm/temurin-<major> und werden von der Gradle-Toolchain
+    // gefunden (siehe config/gradle/gradle.properties.example).
+    "JAVA_HOME": "/usr/lib/jvm/default",
     "GRADLE_USER_HOME": "/home/vscode/.gradle",
 
     // OpenCode liest seine globale Config bevorzugt aus dieser Variablen.
@@ -132,6 +149,13 @@
     "GITLAB_TOKEN": "${localEnv:GITLAB_TOKEN}",
     "GITLAB_REGISTRY": "${localEnv:GITLAB_REGISTRY}",
     "GITLAB_MAVEN_URL": "${localEnv:GITLAB_MAVEN_URL}",
+
+    // Commit-Signierung: "openpgp" nutzt den gemounteten ~/.gnupg des Hosts,
+    // "ssh" signiert mit dem vorhandenen SSH-Key (kein GPG noetig).
+    "DEVKIT_GIT_SIGN": "${localEnv:DEVKIT_GIT_SIGN}",
+    "DEVKIT_GIT_SIGN_FORMAT": "${localEnv:DEVKIT_GIT_SIGN_FORMAT}",
+    "DEVKIT_GPG_SIGNING_KEY": "${localEnv:DEVKIT_GPG_SIGNING_KEY}",
+    "DEVKIT_SSH_SIGNING_KEY": "${localEnv:DEVKIT_SSH_SIGNING_KEY}",
 
     // API-Keys für OpenCode-Provider (Alternative: `opencode auth login`).
     "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
@@ -180,11 +204,12 @@
         "redhat.vscode-yaml"
       ],
       "settings": {
-        "java.jdt.ls.java.home": "/usr/lib/jvm/temurin-21",
+        "java.jdt.ls.java.home": "/usr/lib/jvm/default",
         "java.configuration.runtimes": [
+          { "name": "JavaSE-17", "path": "/usr/lib/jvm/temurin-17" },
           { "name": "JavaSE-21", "path": "/usr/lib/jvm/temurin-21", "default": true }
         ],
-        "java.import.gradle.java.home": "/usr/lib/jvm/temurin-21",
+        "java.import.gradle.java.home": "/usr/lib/jvm/default",
         "terminal.integrated.defaultProfile.linux": "bash"
       }
     }

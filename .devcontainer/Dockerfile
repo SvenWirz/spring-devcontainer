@@ -10,7 +10,10 @@ ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/base:bookworm
 FROM ${BASE_IMAGE}
 
 ARG USERNAME=vscode
-ARG JAVA_VERSION=21
+# Alle zu installierenden Temurin-Major-Versionen, durch Leerzeichen getrennt.
+ARG JAVA_VERSIONS="17 21"
+# Version, die auf dem PATH liegt und auf die JAVA_HOME zeigt.
+ARG JAVA_DEFAULT=21
 ARG GRADLE_VERSION=current
 ARG OPENCODE_VERSION=latest
 ARG YQ_VERSION=latest
@@ -51,7 +54,8 @@ RUN set -euo pipefail; \
 RUN set -euo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        ca-certificates openssl curl wget gnupg apt-transport-https \
+        ca-certificates openssl curl wget apt-transport-https \
+        gnupg gnupg-agent pinentry-tty \
         git git-lfs openssh-client \
         jq gettext-base unzip zip xz-utils bzip2 \
         less vim-tiny nano tree ripgrep \
@@ -79,9 +83,14 @@ RUN set -euo pipefail; \
     yq --version
 
 # ---------------------------------------------------------------------------
-# 4) Eclipse Temurin JDK aus dem offiziellen Adoptium-APT-Repository
-#    JAVA_HOME wird über einen stabilen Symlink /usr/lib/jvm/temurin-<major>
-#    ansprechbar gemacht (architekturunabhängig).
+# 4) Eclipse Temurin JDKs aus dem offiziellen Adoptium-APT-Repository
+#
+#    In einer gewachsenen Microservice-Landschaft laufen selten alle Services
+#    auf derselben Java-Version. Deshalb werden alle in JAVA_VERSIONS gelisteten
+#    JDKs installiert; JAVA_DEFAULT bestimmt, welches auf dem PATH liegt.
+#    Jedes JDK ist zusätzlich über den stabilen, architekturunabhängigen
+#    Symlink /usr/lib/jvm/temurin-<major> erreichbar - genau die Pfade, die in
+#    org.gradle.java.installations.paths eingetragen werden.
 # ---------------------------------------------------------------------------
 RUN set -euo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
@@ -92,13 +101,25 @@ RUN set -euo pipefail; \
     echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb ${VERSION_CODENAME} main" \
         > /etc/apt/sources.list.d/adoptium.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends "temurin-${JAVA_VERSION}-jdk"; \
+    for v in ${JAVA_VERSIONS}; do \
+        apt-get install -y --no-install-recommends "temurin-${v}-jdk"; \
+    done; \
     apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    real_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"; \
-    ln -snf "$real_home" "/usr/lib/jvm/temurin-${JAVA_VERSION}"; \
-    "/usr/lib/jvm/temurin-${JAVA_VERSION}/bin/java" -version
+    for v in ${JAVA_VERSIONS}; do \
+        d="$(find /usr/lib/jvm -maxdepth 1 -type d -name "temurin-${v}-jdk-*" | sort | head -n1)"; \
+        if [ -z "$d" ]; then echo "Temurin ${v} nicht gefunden" >&2; exit 1; fi; \
+        ln -snf "$d" "/usr/lib/jvm/temurin-${v}"; \
+        "/usr/lib/jvm/temurin-${v}/bin/java" -version; \
+    done; \
+    if [ ! -d "/usr/lib/jvm/temurin-${JAVA_DEFAULT}" ]; then \
+        echo "JAVA_DEFAULT=${JAVA_DEFAULT} ist nicht in JAVA_VERSIONS=${JAVA_VERSIONS} enthalten" >&2; exit 1; \
+    fi; \
+    ln -snf "/usr/lib/jvm/temurin-${JAVA_DEFAULT}" /usr/lib/jvm/default; \
+    printf '%s\n' "${JAVA_VERSIONS}" > /usr/lib/jvm/.devkit-versions
 
-ENV JAVA_HOME=/usr/lib/jvm/temurin-21
+# /usr/lib/jvm/default zeigt auf JAVA_DEFAULT - dadurch muss beim Wechsel der
+# Standardversion nur der Build-Arg angepasst werden, nicht jede Referenz.
+ENV JAVA_HOME=/usr/lib/jvm/default
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
@@ -203,7 +224,8 @@ RUN set -euo pipefail; \
         "/home/${USERNAME}/.local" \
         "/home/${USERNAME}/.local/share" \
         "/home/${USERNAME}/.local/share/opencode"; \
-    install -d -m 0755 /opt/devkit /opt/devkit/config /opt/devkit/certs /var/lib/docker
+    install -d -m 0755 /opt/devkit /opt/devkit/config /opt/devkit/certs \
+        /var/lib/docker /etc/docker
 
 # Gradle-Daemon-Speicher konservativ vorbelegen; per gradle.properties übersteuerbar.
 ENV GRADLE_USER_HOME=/home/${USERNAME}/.gradle \
