@@ -1,0 +1,17 @@
+# Shell-Skripte und Container-Dateien müssen im Linux-Container mit LF ankommen,
+# auch wenn auf Windows mit core.autocrlf=true gearbeitet wird.
+* text=auto eol=lf
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.yaml        text eol=lf
+*.yml         text eol=lf
+*.json        text eol=lf
+*.properties  text eol=lf
+*.gradle      text eol=lf
+*.kts         text eol=lf
+*.md          text eol=lf
+
+*.crt binary
+*.pem binary
+*.cer binary
+*.der binary

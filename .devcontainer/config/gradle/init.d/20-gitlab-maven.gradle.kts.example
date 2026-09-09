@@ -1,0 +1,53 @@
+// ---------------------------------------------------------------------------
+// Gradle-Init-Skript: bindet die Maven-Package-Registry einer self-hosted
+// GitLab-Instanz als Dependency-Repository ein.
+//
+// Aktivieren: Datei ohne die Endung .example ablegen
+//             (.devcontainer/config/gradle/init.d/20-gitlab-maven.gradle.kts).
+//
+// Konfiguration über gradle.properties oder Umgebungsvariablen:
+//   gitlabMavenUrl   / GITLAB_MAVEN_URL   z. B. https://gitlab.example.com/api/v4/groups/42/-/packages/maven
+//   gitlabTokenName  / GITLAB_TOKEN_NAME  Private-Token | Deploy-Token | Job-Token
+//   gitlabToken      / GITLAB_TOKEN       der eigentliche Token
+//
+// GitLab authentifiziert die Maven-Registry über einen HTTP-Header, nicht über
+// Basic Auth - deshalb HttpHeaderAuthentication statt credentials { }.
+// ---------------------------------------------------------------------------
+
+val mavenUrl: String? = providers.gradleProperty("gitlabMavenUrl").orNull
+    ?: providers.environmentVariable("GITLAB_MAVEN_URL").orNull
+
+val tokenName: String = providers.gradleProperty("gitlabTokenName").orNull
+    ?: providers.environmentVariable("GITLAB_TOKEN_NAME").orNull
+    ?: "Private-Token"
+
+val token: String? = providers.gradleProperty("gitlabToken").orNull
+    ?: providers.environmentVariable("GITLAB_TOKEN").orNull
+
+if (mavenUrl.isNullOrBlank() || token.isNullOrBlank()) {
+    logger.info("GitLab-Maven-Registry nicht konfiguriert (gitlabMavenUrl/gitlabToken fehlen).")
+} else {
+    fun RepositoryHandler.gitlab() {
+        maven {
+            name = "gitlab"
+            url = uri(mavenUrl)
+            credentials(HttpHeaderCredentials::class) {
+                name = tokenName
+                value = token
+            }
+            authentication {
+                create<HttpHeaderAuthentication>("header")
+            }
+        }
+    }
+
+    settingsEvaluated {
+        pluginManagement.repositories.gitlab()
+        @Suppress("UnstableApiUsage")
+        dependencyResolutionManagement.repositories.gitlab()
+    }
+
+    allprojects {
+        repositories.gitlab()
+    }
+}

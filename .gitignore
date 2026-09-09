@@ -1,0 +1,24 @@
+# --- Root-CA-Zertifikate ---------------------------------------------------
+# Firmenzertifikate werden standardmäßig nicht eingecheckt. Wer sie im Repo
+# verwalten will, kommentiert die folgenden vier Zeilen aus.
+.devcontainer/certs/*.crt
+.devcontainer/certs/*.pem
+.devcontainer/certs/*.cer
+.devcontainer/certs/*.der
+
+# --- Lokale Konfiguration mit Zugangsdaten ---------------------------------
+.devcontainer/config/gradle/gradle.properties
+.devcontainer/config/opencode/auth.json
+.devcontainer/config/**/*.local.*
+.env
+
+# Aktive Gradle-Init-Skripte bleiben lokal; die *.example-Vorlagen sind im Repo.
+.devcontainer/config/gradle/init.d/*.gradle
+.devcontainer/config/gradle/init.d/*.gradle.kts
+
+# --- Werkzeuge -------------------------------------------------------------
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db

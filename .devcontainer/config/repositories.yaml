@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Repositories, die beim Start des Dev Containers in das persistente Volume
+# (/src) geklont werden.
+#
+# Anwenden:  devkit repos sync      (nur fehlende klonen)
+#            devkit repos update    (alle aktualisieren)
+#            devkit repos list      (Status anzeigen)
+#
+# Die Datei wird read-only in den Container gemountet; Änderungen wirken ohne
+# Rebuild, ein `devkit repos sync` genügt.
+# ---------------------------------------------------------------------------
+
+# --- Self-hosted GitLab ----------------------------------------------------
+gitlab:
+  # Hostname der Instanz (ohne Schema). Alternativ auf dem Host GITLAB_HOST setzen.
+  host: ""              # z. B. gitlab.example.com
+
+  # https = Klonen über HTTPS + Token (empfohlen, siehe README)
+  # ssh   = Klonen über SSH (setzt gemountete Keys voraus)
+  protocol: https
+
+  # Ganze Gruppen automatisch auflösen, statt jedes Repository einzeln zu pflegen.
+  # Erfordert GITLAB_TOKEN mit dem Scope `read_api`.
+  groups: []
+  #   - path: platform/services      # Gruppen- bzw. Untergruppenpfad
+  #     includeSubgroups: true       # Untergruppen mit einbeziehen
+  #     archived: false              # archivierte Projekte überspringen
+  #     dirStrategy: relative        # relative | full | flat  (Zielpfad unter /src)
+  #     exclude:                     # Shell-Glob gegen Projektpfad/-name
+  #       - "*-deprecated"
+  #       - "platform/services/legacy-*"
+  #     updateOnStart: true          # gilt für alle Projekte dieser Gruppe
+
+# --- Vorgaben für die Einträge unter `repositories:` ------------------------
+defaults:
+  # Präfix für Kurzschreibweisen: url "team/service.git" wird zu
+  # "<baseUrl>/team/service.git". Leer lassen, um immer volle URLs zu verlangen.
+  baseUrl: ""
+
+  # Branch, wenn ein Eintrag keinen eigenen angibt. Leer = Default-Branch des Remotes.
+  branch: ""
+
+  # 0 = vollständiger Clone, >0 = Shallow Clone mit dieser Tiefe.
+  depth: 0
+
+  # true = bei jedem Container-Start `git fetch` + Fast-Forward-Pull.
+  # Lokale Änderungen werden dabei nie überschrieben (dann nur fetch).
+  updateOnStart: false
+
+  # Submodule bzw. Git-LFS-Inhalte mitziehen.
+  submodules: false
+  lfs: false
+
+# --- Einzeln gepflegte Repositories ----------------------------------------
+# Werden mit den über `gitlab.groups` gefundenen Projekten zusammengeführt;
+# bei gleichem Zielverzeichnis gewinnt der Eintrag aus dieser Liste.
+repositories: []
+
+# ---------------------------------------------------------------------------
+# Beispiele – zum Aktivieren `repositories: []` oben löschen und die Einträge
+# unter `repositories:` einrücken.
+# ---------------------------------------------------------------------------
+#
+# repositories:
+#   # Minimal: klont nach /src/spring-petclinic
+#   - url: https://github.com/spring-projects/spring-petclinic.git
+#
+#   # Mit allen Optionen
+#   - name: order-service
+#     url: https://gitlab.example.com/platform/services/order-service.git
+#     dir: services/order-service     # Zielpfad relativ zu /src
+#     branch: develop
+#     depth: 1
+#     updateOnStart: true
+#     submodules: false
+#     lfs: false
+#     postClone: "./gradlew --quiet dependencies --configuration compileClasspath"
+#
+#   # Kurzschreibweise in Kombination mit defaults.baseUrl
+#   - url: platform/services/payment-service.git
+#
+#   # SSH statt HTTPS (setzt gemountete/weitergeleitete SSH-Keys voraus)
+#   - url: git@gitlab.example.com:platform/services/shipping-service.git
+#
+#   # HTTPS mit Token aus der Umgebung: ${VAR} wird beim Klonen ersetzt.
+#   # Der Token landet dadurch in der Remote-URL des Repos - sauberer ist der
+#   # Credential-Helper über GITLAB_TOKEN (siehe README).
+#   - url: https://oauth2:${GITLAB_TOKEN}@gitlab.example.com/platform/billing.git

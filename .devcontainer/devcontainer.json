@@ -1,0 +1,192 @@
+// Dev Container für Java-21-/Spring-Boot-Microservices mit OpenCode (AI).
+//
+//  * Docker-in-Docker (echter, isolierter Daemon im Container -> Testcontainers, docker compose)
+//  * IntelliJ IDEA / JetBrains Gateway kompatibel (customizations.jetbrains, Backend-Libs im Image)
+//  * Root-CA aus .devcontainer/certs wird in System- und Java-Truststore installiert
+//  * Persistent Volumes für Quellcode (/src), Gradle-Cache, OpenCode-Daten, Docker-Daten, IDE-Caches
+//  * Repos aus .devcontainer/config/repositories.yaml werden nach /src geklont
+//  * Gradle- und OpenCode-Config werden read-only gemountet (Pfade unten überschreibbar)
+//  * Node/npm (LTS) fuer Frontend-Anteile und npx-Werkzeuge
+//
+// Doku: siehe README.md im Projektwurzelverzeichnis.
+{
+  "name": "Java 21 · Spring Boot · OpenCode DevKit",
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "args": {
+      "USERNAME": "vscode",
+      // JDK-Major-Version aus dem Adoptium-APT-Repo (Temurin).
+      "JAVA_VERSION": "21",
+      // "current" = jeweils aktuelles Gradle-Release, sonst z. B. "8.14.3".
+      "GRADLE_VERSION": "current",
+      // "latest" oder eine konkrete OpenCode-Version, z. B. "0.5.0".
+      "OPENCODE_VERSION": "latest",
+      "TZ": "Europe/Berlin"
+    }
+  },
+
+  "features": {
+    // Echtes Docker-in-Docker: eigener dockerd im Container, kein Host-Socket.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2",
+      "installDockerBuildx": true
+    },
+    // Node/npm fuer Frontend-Anteile, npx-Werkzeuge und npm-basierte MCP-Server.
+    // "lts" oder eine Major-Version, z. B. "22".
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts",
+      "nodeGypDependencies": true
+    }
+  },
+
+  // Von docker-in-docker benötigt. Explizit gesetzt, weil nicht jeder Client die
+  // Feature-Metadaten (privileged/init) automatisch übernimmt.
+  "privileged": true,
+  "init": true,
+
+  // Das lokale Setup-Repo (dieses Projekt) liegt als Bind-Mount im Container,
+  // damit Änderungen an Config und Skripten sofort wirken.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/devkit,type=bind,consistency=cached",
+  // Gearbeitet wird im persistenten Volume mit den geklonten Repositories.
+  "workspaceFolder": "/src",
+
+  "mounts": [
+    // ---- Persistente Volumes -------------------------------------------------
+    // Quellcode / geklonte Repositories – überlebt Rebuilds des Containers.
+    "source=${localWorkspaceFolderBasename}-src,target=/src,type=volume",
+    // Gradle-Caches, Wrapper-Distributionen, Daemon-Registry.
+    "source=${localWorkspaceFolderBasename}-gradle,target=/home/vscode/.gradle,type=volume",
+    // OpenCode-Zustand: auth.json (Provider-Logins), Sessions, Cache.
+    "source=${localWorkspaceFolderBasename}-opencode,target=/home/vscode/.local/share/opencode,type=volume",
+    // Images/Layer des inneren Docker-Daemons – spart Re-Pulls nach Rebuild.
+    "source=${localWorkspaceFolderBasename}-docker,target=/var/lib/docker,type=volume",
+    // Indizes/Caches des JetBrains-Backends – spart Re-Indexierung nach Rebuild.
+    "source=${localWorkspaceFolderBasename}-jetbrains,target=/home/vscode/.cache/JetBrains,type=volume",
+
+    // ---- Gemountete Konfiguration (read-only) --------------------------------
+    // Enthält repositories.yaml, gradle/ und opencode/.
+    "source=${localWorkspaceFolder}/.devcontainer/config,target=/opt/devkit/config,type=bind,readonly",
+    // Root-CA-Zertifikate (zur Laufzeit; beim Image-Build werden sie zusätzlich eingebacken).
+    "source=${localWorkspaceFolder}/.devcontainer/certs,target=/opt/devkit/certs,type=bind,readonly"
+
+    // ---- Optional: Config von außerhalb dieses Repos mounten ------------------
+    // Einfach die passende Zeile einkommentieren; sie überlagert das jeweilige
+    // Unterverzeichnis aus dem config-Mount oben.
+    // ,"source=C:\\Users\\<user>\\corp-devkit\\gradle,target=/opt/devkit/config/gradle,type=bind,readonly"
+    // ,"source=C:\\Users\\<user>\\corp-devkit\\opencode,target=/opt/devkit/config/opencode,type=bind,readonly"
+    // ,"source=C:\\Users\\<user>\\corp-devkit\\certs,target=/opt/devkit/certs,type=bind,readonly"
+
+    // ---- Optional: SSH-Keys des Hosts für Git über SSH ------------------------
+    // Nur einkommentieren, wenn der Pfad wirklich existiert – sonst startet der
+    // Container nicht. Die Keys werden im postCreate nach ~/.ssh kopiert (chmod 600).
+    // ,"source=${localEnv:USERPROFILE}${localEnv:HOME}/.ssh,target=/opt/devkit/ssh,type=bind,readonly"
+  ],
+
+  "containerEnv": {
+    // Pfade, auf die sich alle Skripte beziehen.
+    "DEVKIT_HOME": "/workspaces/devkit/.devcontainer",
+    "DEVKIT_CONFIG": "/opt/devkit/config",
+    "DEVKIT_CERTS": "/opt/devkit/certs",
+    "DEVKIT_WORKSPACE": "/src",
+
+    "JAVA_HOME": "/usr/lib/jvm/temurin-21",
+    "GRADLE_USER_HOME": "/home/vscode/.gradle",
+
+    // OpenCode liest seine globale Config bevorzugt aus dieser Variablen.
+    "OPENCODE_CONFIG": "/opt/devkit/config/opencode/opencode.json",
+
+    // Alle gängigen Clients auf das System-CA-Bundle zeigen lassen, damit die
+    // hinterlegte Root-CA auch außerhalb der JVM greift.
+    "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/ca-certificates.crt",
+    "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+    "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+    "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+    "GIT_SSL_CAINFO": "/etc/ssl/certs/ca-certificates.crt"
+  },
+
+  // Werte vom Host durchreichen. Nicht gesetzte Variablen kommen leer an und
+  // werden von den Skripten ignoriert.
+  "remoteEnv": {
+    "HTTP_PROXY": "${localEnv:HTTP_PROXY}",
+    "HTTPS_PROXY": "${localEnv:HTTPS_PROXY}",
+    "NO_PROXY": "${localEnv:NO_PROXY}",
+    "http_proxy": "${localEnv:HTTP_PROXY}",
+    "https_proxy": "${localEnv:HTTPS_PROXY}",
+    "no_proxy": "${localEnv:NO_PROXY}",
+
+    // Git-Identität und optionaler HTTPS-Token für das Klonen (siehe README).
+    "DEVKIT_GIT_USER_NAME": "${localEnv:DEVKIT_GIT_USER_NAME}",
+    "DEVKIT_GIT_USER_EMAIL": "${localEnv:DEVKIT_GIT_USER_EMAIL}",
+    "DEVKIT_GIT_HOST": "${localEnv:DEVKIT_GIT_HOST}",
+    "DEVKIT_GIT_TOKEN_USER": "${localEnv:DEVKIT_GIT_TOKEN_USER}",
+    "DEVKIT_GIT_TOKEN": "${localEnv:DEVKIT_GIT_TOKEN}",
+
+    // Self-hosted GitLab: Host, Token und Registry.
+    // GITLAB_HOST/GITLAB_TOKEN werden auch von glab und den Gradle-Init-Skripten
+    // gelesen und haben Vorrang vor den DEVKIT_GIT_*-Varianten.
+    "GITLAB_HOST": "${localEnv:GITLAB_HOST}",
+    "GITLAB_TOKEN": "${localEnv:GITLAB_TOKEN}",
+    "GITLAB_REGISTRY": "${localEnv:GITLAB_REGISTRY}",
+    "GITLAB_MAVEN_URL": "${localEnv:GITLAB_MAVEN_URL}",
+
+    // API-Keys für OpenCode-Provider (Alternative: `opencode auth login`).
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "OPENROUTER_API_KEY": "${localEnv:OPENROUTER_API_KEY}"
+  },
+
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+
+  // Skripte werden mit `bash <datei>` gestartet, damit das fehlende x-Bit auf
+  // Windows-Bind-Mounts keine Rolle spielt.
+  "postCreateCommand": "bash /workspaces/devkit/.devcontainer/scripts/post-create.sh",
+  "postStartCommand": "bash /workspaces/devkit/.devcontainer/scripts/post-start.sh",
+
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "64gb"
+  },
+
+  "forwardPorts": [8080, 8081, 5005],
+  "portsAttributes": {
+    "8080": { "label": "Spring Boot", "onAutoForward": "notify" },
+    "8081": { "label": "Actuator / 2. Service", "onAutoForward": "silent" },
+    "5005": { "label": "JVM Remote Debug", "onAutoForward": "silent" }
+  },
+  "otherPortsAttributes": { "onAutoForward": "silent" },
+
+  "customizations": {
+    "jetbrains": {
+      // "IntelliJ" = IntelliJ IDEA Ultimate, "IntelliJIdeaCommunity" für die CE.
+      "backend": "IntelliJ",
+      "settings": {
+        "com.intellij:idea.config.path": "/home/vscode/.config/JetBrains"
+      }
+      // Plugins optional per Marketplace-ID vorinstallieren, z. B.:
+      // "plugins": ["Docker", "org.jetbrains.plugins.go-template"]
+    },
+    "vscode": {
+      "extensions": [
+        "vscjava.vscode-java-pack",
+        "vmware.vscode-boot-dev-pack",
+        "vscjava.vscode-gradle",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "java.jdt.ls.java.home": "/usr/lib/jvm/temurin-21",
+        "java.configuration.runtimes": [
+          { "name": "JavaSE-21", "path": "/usr/lib/jvm/temurin-21", "default": true }
+        ],
+        "java.import.gradle.java.home": "/usr/lib/jvm/temurin-21",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

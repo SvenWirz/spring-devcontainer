@@ -1,0 +1,43 @@
+// ---------------------------------------------------------------------------
+// Gradle-Init-Skript: leitet alle Dependency-Repositories über einen internen
+// Nexus/Artifactory-Mirror um.
+//
+// Aktivieren: Datei ohne die Endung .example ablegen
+//             (.devcontainer/config/gradle/init.d/10-corporate-repository.gradle.kts).
+//             Sie wird nach $GRADLE_USER_HOME/init.d/ verlinkt und automatisch
+//             von jedem Gradle-Build geladen.
+//
+// Zugangsdaten kommen aus gradle.properties (siehe gradle.properties.example).
+// ---------------------------------------------------------------------------
+
+val repoUrl: String? = providers.gradleProperty("corporateRepositoryUrl").orNull
+val repoUser: String? = providers.gradleProperty("corporateRepositoryUser").orNull
+val repoPassword: String? = providers.gradleProperty("corporateRepositoryPassword").orNull
+
+if (repoUrl.isNullOrBlank()) {
+    logger.info("corporateRepositoryUrl nicht gesetzt - Mirror wird nicht aktiviert.")
+} else {
+    fun RepositoryHandler.corporate() {
+        clear()
+        maven {
+            name = "corporate"
+            url = uri(repoUrl)
+            if (!repoUser.isNullOrBlank()) {
+                credentials {
+                    username = repoUser
+                    password = repoPassword
+                }
+            }
+        }
+    }
+
+    settingsEvaluated {
+        pluginManagement.repositories.corporate()
+        @Suppress("UnstableApiUsage")
+        dependencyResolutionManagement.repositories.corporate()
+    }
+
+    allprojects {
+        repositories.corporate()
+    }
+}

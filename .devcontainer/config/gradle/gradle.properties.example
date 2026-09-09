@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Vorlage für die globale Gradle-Konfiguration im Dev Container.
+#
+# Aktivieren:  Datei nach gradle.properties kopieren (im selben Verzeichnis).
+#              Sie wird nach $GRADLE_USER_HOME/gradle.properties verlinkt und
+#              gilt damit für alle Projekte unter /src.
+#
+# ACHTUNG: gradle.properties ist per .gitignore ausgeschlossen, weil hier oft
+# Zugangsdaten für Firmen-Repositories stehen.
+# ---------------------------------------------------------------------------
+
+# --- JVM / Performance -----------------------------------------------------
+org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+org.gradle.daemon=true
+org.gradle.parallel=true
+org.gradle.caching=true
+org.gradle.configuration-cache=true
+
+# Toolchain fest auf das mitgelieferte Temurin 21 zeigen lassen.
+org.gradle.java.installations.paths=/usr/lib/jvm/temurin-21
+# Kein automatischer JDK-Download hinter restriktiven Netzen.
+org.gradle.java.installations.auto-download=false
+
+# --- Firmen-Repository (Nexus/Artifactory) ---------------------------------
+# Werden von init.d/10-corporate-repository.gradle.kts ausgewertet.
+#corporateRepositoryUrl=https://nexus.example.com/repository/maven-public/
+#corporateRepositoryUser=my-user
+#corporateRepositoryPassword=my-token
+
+# --- Proxy (nur nötig, wenn HTTP(S)_PROXY nicht reicht) --------------------
+#systemProp.http.proxyHost=proxy.example.com
+#systemProp.http.proxyPort=8080
+#systemProp.https.proxyHost=proxy.example.com
+#systemProp.https.proxyPort=8080
+#systemProp.http.nonProxyHosts=localhost|127.0.0.1|*.example.com
