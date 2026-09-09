@@ -68,6 +68,7 @@ devcontainer exec --workspace-folder . bash
 ├── Dockerfile                 Temurin 17+21, Gradle, OpenCode, glab, Tooling
 ├── certs/                     Root-CA-Zertifikate ablegen  (read-only gemountet)
 ├── config/                    read-only nach /opt/devkit/config gemountet
+│   ├── devkit.env.example     Vorlage für lokale Werte (Token, Hostnamen)
 │   ├── repositories.yaml      Liste der zu klonenden Repositories
 │   ├── docker/
 │   │   └── daemon.json.example  Registry-Mirror des inneren Daemons
@@ -86,6 +87,7 @@ devcontainer exec --workspace-folder . bash
     ├── configure-git.sh       Identität, Token, SSH-Keys
     ├── configure-gpg.sh       Commit-Signierung (GPG oder SSH)
     ├── configure-docker.sh    daemon.json des inneren Daemons
+    ├── local-env.sh           lädt devkit.local.env
     ├── link-configs.sh        Config-Mounts zu Gradle-/OpenCode-Pfaden
     ├── clone-repos.sh         repositories.yaml auswerten
     ├── gitlab.sh              GitLab-API, Gruppen-Discovery, glab
@@ -548,7 +550,87 @@ Dauerhaft setzen (PowerShell, danach Terminal/IDE neu starten):
 
 ---
 
-## 13. Docker-in-Docker
+## 13. Lokale Werte hinterlegen
+
+Token, interne Hostnamen und Schlüssel gehören weder ins Repository noch in
+Windows-Umgebungsvariablen, wenn es auch einfacher geht. Zwei Dateien im
+`config`-Verzeichnis sind dafür vorgesehen; beide sind per `.gitignore`
+ausgeschlossen und liegen auf dem Host, überleben also Container-Rebuilds.
+
+| Datei | Inhalt | Vorlage im Repo |
+|---|---|---|
+| `config/devkit.local.env` | Token, Hostnamen, Signaturschlüssel | `config/devkit.env.example` |
+| `config/repositories.local.yaml` | die echte Repository-/Gruppenliste | `config/repositories.yaml` |
+
+> Die Vorlagen heißen bewusst **ohne** `.local.` im Namen – das Ignore-Muster
+> ist `*.local.*`. Immer eine Kopie anlegen, nie die Vorlage selbst befüllen.
+
+### Einrichten
+
+```bash
+cd .devcontainer/config
+cp devkit.env.example devkit.local.env
+cp repositories.yaml  repositories.local.yaml
+```
+
+`devkit.local.env` befüllen:
+
+```
+GITLAB_HOST=gitlab.example.com
+GITLAB_TOKEN=glpat-...
+DEVKIT_GIT_USER_NAME=Vorname Nachname
+DEVKIT_GIT_USER_EMAIL=vorname.nachname@example.com
+```
+
+`repositories.local.yaml` bekommt Host und Gruppen:
+
+```yaml
+gitlab:
+  host: gitlab.example.com
+  groups:
+    - path: platform/services
+      includeSubgroups: true
+```
+
+Danach im Container:
+
+```bash
+devkit gitlab login     # glab + git-Credential-Helper
+devkit gitlab status    # "Git-Zugang" muss ok sein
+devkit repos sync       # klont nach /src
+devkit doctor
+```
+
+Ohne Container-Neustart wirksam: die Dateien liegen im bind-gemounteten
+`config`-Verzeichnis. Nach dem allerersten Anlegen einmal ein neues Terminal
+öffnen, damit interaktive Shells die Variablen sehen.
+
+### Vorrangregeln
+
+```
+Umgebungsvariable (Host, über remoteEnv)   ← gewinnt, wenn nicht leer
+        ↓
+devkit.local.env
+        ↓
+Vorgabe im Skript
+```
+
+```
+DEVKIT_REPOS_CONFIG   ← explizit gesetzter Pfad gewinnt
+        ↓
+repositories.local.yaml
+        ↓
+repositories.yaml
+```
+
+`devkit.local.env` wird **nicht** als Shell ausgeführt, sondern zeilenweise
+geparst: `KEY=VALUE`, `#` am Zeilenanfang ist Kommentar, umgebende
+Anführungszeichen werden entfernt, CRLF wird toleriert. `$VAR`, `` ` `` und
+`$(...)` bleiben Text – ein Token mit Sonderzeichen kann nichts auslösen.
+
+---
+
+## 14. Docker-in-Docker
 
 Im Container läuft ein **eigener** Docker-Daemon; er ist vom Host-Docker
 isoliert. Container, die hier gestartet werden, erscheinen nicht in Docker
@@ -629,7 +711,7 @@ Nach Änderungen: `devkit config link`.
 
 ---
 
-## 14. Commit-Signierung
+## 15. Commit-Signierung
 
 Verlangt eure GitLab-Instanz signierte Commits, richtet der Container das beim
 Start selbst ein. Zwei Varianten, umgeschaltet über `DEVKIT_GIT_SIGN_FORMAT`:
@@ -684,7 +766,7 @@ devkit doctor    # zeigt aktive Signierung und Schlüssel
 
 ---
 
-## 15. Vorgebautes Image aus der GitLab CI
+## 16. Vorgebautes Image aus der GitLab CI
 
 Ohne Prebuild baut jede:r Entwickler:in das ~2,6 GB große Image selbst – hinter
 einem Proxy schnell 15 Minuten. `.gitlab-ci.yml` im Projektwurzelverzeichnis
@@ -728,7 +810,7 @@ durch `"image": "registry.example.com/platform/devkit:latest"` ersetzen und den
 
 ---
 
-## 16. devkit-Befehle
+## 17. devkit-Befehle
 
 ```
 devkit doctor           JDK, Gradle, OpenCode, Docker, Truststore, Volumes prüfen
@@ -747,7 +829,7 @@ devkit gitlab status    Verbindung zur GitLab-Instanz prüfen
 
 ---
 
-## 17. Anpassen
+## 18. Anpassen
 
 | Ziel | Vorgehen |
 |---|---|
@@ -770,7 +852,7 @@ bekommen. Zum Aktualisieren löschen und den Container neu bauen.
 
 ---
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 **`docker info` schlägt direkt nach dem Start fehl**
 Der innere Daemon braucht einige Sekunden. Bleibt es dabei: prüfen, ob

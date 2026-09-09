@@ -9,8 +9,14 @@
 # --- Lokale Konfiguration mit Zugangsdaten ---------------------------------
 .devcontainer/config/gradle/gradle.properties
 .devcontainer/config/opencode/auth.json
-.devcontainer/config/**/*.local.*
 .env
+
+# Lokale Werte und echte Repository-Listen bleiben auf der Maschine.
+# Die zugehoerigen Vorlagen heissen bewusst *.example OHNE .local. im Namen,
+# damit sie ausgeliefert werden:
+#   devkit.env.example        -> devkit.local.env
+#   repositories.yaml         -> repositories.local.yaml
+.devcontainer/config/**/*.local.*
 
 # Aktive Gradle-Init-Skripte bleiben lokal; die *.example-Vorlagen sind im Repo.
 .devcontainer/config/gradle/init.d/*.gradle

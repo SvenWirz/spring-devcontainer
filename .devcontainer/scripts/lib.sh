@@ -52,4 +52,9 @@ git_can_auth() {
     grep -q '^password=.' <<<"$out"
 }
 
+# Lokale Werte aus devkit.local.env laden (nicht versioniert, ueberlebt Rebuilds).
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=local-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/local-env.sh"
+
 _DEVKIT_LIB_LOADED=1

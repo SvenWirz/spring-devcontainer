@@ -22,6 +22,24 @@ printf '%s\n' "$_c_reset"
 as_root ln -sfn "$SCRIPT_DIR/devkit.sh" /usr/local/bin/devkit
 as_root chmod +x "$SCRIPT_DIR"/*.sh 2>/dev/null || true
 
+# Lokale Werte auch in interaktiven Shells verfuegbar machen (die Lifecycle-
+# Skripte laden sie ueber lib.sh ohnehin selbst).
+as_root tee /etc/profile.d/devkit-local-env.sh >/dev/null <<PROFILE
+# von devkit erzeugt - laedt .devcontainer/config/devkit.local.env
+[ -f "$SCRIPT_DIR/local-env.sh" ] && . "$SCRIPT_DIR/local-env.sh"
+PROFILE
+as_root chmod 0644 /etc/profile.d/devkit-local-env.sh
+# Nicht-Login-Shells lesen /etc/profile.d nicht - deshalb zusaetzlich einhaengen.
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -q 'devkit-local-env' "$rc" 2>/dev/null && continue
+    {
+        echo
+        echo '# devkit-local-env'
+        echo '[ -f /etc/profile.d/devkit-local-env.sh ] && . /etc/profile.d/devkit-local-env.sh'
+    } >> "$rc"
+done
+
 bash "$SCRIPT_DIR/install-ca-certs.sh" || warn "Root-CA konnte nicht vollstaendig installiert werden."
 bash "$SCRIPT_DIR/configure-git.sh"       || warn "Git-Konfiguration unvollstaendig."
 bash "$SCRIPT_DIR/configure-gpg.sh"       || warn "Commit-Signierung nicht konfiguriert."

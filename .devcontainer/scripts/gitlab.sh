@@ -51,12 +51,17 @@ gitlab_api() {
     token="$(gitlab_token)"
     local sep='?'; [[ "$path" == *"?"* ]] && sep='&'
 
+    # Ohne Timeout blockiert eine nicht erreichbare Instanz (VPN aus, Netz weg)
+    # den postStart-Hook - und damit den Container-Start - auf unbestimmte Zeit.
+    local -a tmo=(--connect-timeout "${DEVKIT_GITLAB_CONNECT_TIMEOUT:-5}"
+                  --max-time "${DEVKIT_GITLAB_MAX_TIME:-30}")
+
     while :; do
         if [ -n "$token" ]; then
-            body="$(curl -fsSL -H "PRIVATE-TOKEN: $token" \
+            body="$(curl -fsSL "${tmo[@]}" -H "PRIVATE-TOKEN: $token" \
                 "${base}/api/v4/${path}${sep}per_page=100&page=${page}" 2>/dev/null)" || return 1
         else
-            body="$(curl -fsSL \
+            body="$(curl -fsSL "${tmo[@]}" \
                 "${base}/api/v4/${path}${sep}per_page=100&page=${page}" 2>/dev/null)" || return 1
         fi
         [ -z "$body" ] && break
@@ -190,7 +195,8 @@ gitlab_status() {
 
     base="$(gitlab_base_url)"
     if [ -n "$token" ]; then
-        me="$(curl -fsSL -H "PRIVATE-TOKEN: $token" "$base/api/v4/user" 2>/dev/null)" || me=""
+        me="$(curl -fsSL --connect-timeout 5 --max-time 15 \
+              -H "PRIVATE-TOKEN: $token" "$base/api/v4/user" 2>/dev/null)" || me=""
     else
         me=""
     fi
