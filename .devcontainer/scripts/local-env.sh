@@ -34,10 +34,24 @@ devkit_load_local_env() {
             \"*\") val="${val#\"}"; val="${val%\"}" ;;
             \'*\') val="${val#\'}"; val="${val%\'}" ;;
         esac
-        # Nur setzen, wenn nichts Sinnvolles gesetzt ist: remoteEnv reicht nicht
-        # gesetzte Host-Variablen als leeren String durch, echte Host-Werte
-        # sollen dagegen Vorrang behalten.
-        if [ -z "${!key:-}" ]; then
+        # Die Datei gewinnt. Grund: was ueber remoteEnv hereinkommt, wurde
+        # irgendwann einmal als Windows-Benutzervariable gesetzt und ist von
+        # innen unsichtbar - ein dort vergessener alter Token ueberstimmt sonst
+        # stillschweigend die Datei, die man gerade bewusst gepflegt hat. Genau
+        # dieser Fall kostet bei der Fehlersuche Stunden, weil die API mit 401
+        # antwortet, obwohl in devkit.local.env der richtige Wert steht.
+        #
+        # Abweichende Werte werden gemerkt, damit `devkit gitlab status` den
+        # Konflikt anzeigen kann statt ihn zu verschlucken.
+        # DEVKIT_LOCAL_ENV_MODE=fallback stellt das alte Verhalten wieder her
+        # (Datei nur als Rueckfallebene), etwa wenn eine CI gezielt ueberschreibt.
+        if [ "${DEVKIT_LOCAL_ENV_MODE:-override}" = "fallback" ]; then
+            [ -z "${!key:-}" ] && export "$key=$val"
+        else
+            if [ -n "${!key:-}" ] && [ "${!key}" != "$val" ]; then
+                DEVKIT_LOCAL_ENV_OVERRIDDEN="${DEVKIT_LOCAL_ENV_OVERRIDDEN:-}${key} "
+                export DEVKIT_LOCAL_ENV_OVERRIDDEN
+            fi
             export "$key=$val"
         fi
     done < <(tr -d '\r' < "$f")

@@ -608,12 +608,23 @@ Ohne Container-Neustart wirksam: die Dateien liegen im bind-gemounteten
 ### Vorrangregeln
 
 ```
-Umgebungsvariable (Host, über remoteEnv)   ← gewinnt, wenn nicht leer
+devkit.local.env                     ← gewinnt
         ↓
-devkit.local.env
+Umgebungsvariable (Host, über remoteEnv)
         ↓
 Vorgabe im Skript
 ```
+
+Die Datei gewinnt bewusst. Was über `remoteEnv` hereinkommt, wurde irgendwann
+als Windows-Benutzervariable gesetzt und ist von innen unsichtbar – ein dort
+vergessener alter Token überstimmt sonst stillschweigend die Datei, die man
+gerade gepflegt hat. Das Ergebnis ist ein `401`, obwohl in `devkit.local.env`
+der richtige Wert steht.
+
+Weicht ein Wert aus der Umgebung von der Datei ab, meldet `devkit gitlab status`
+das ausdrücklich. Wer das alte Verhalten braucht (etwa weil eine CI gezielt
+überschreibt), setzt `DEVKIT_LOCAL_ENV_MODE=fallback` – dann dient die Datei nur
+als Rückfallebene.
 
 ```
 DEVKIT_REPOS_CONFIG   ← explizit gesetzter Pfad gewinnt
@@ -864,6 +875,20 @@ Root-CA fehlt oder wurde nach dem Build hinzugefügt: `devkit certs install`,
 danach `devkit doctor`. Läuft schon der *Build* ins Zertifikatsproblem, muss die
 CA vor dem Rebuild in `.devcontainer/certs/` liegen.
 
+**API antwortet `401`, obwohl in `devkit.local.env` ein gültiger Token steht**
+Auf dem Host ist zusätzlich eine Umgebungsvariable `GITLAB_TOKEN` gesetzt – oft
+vor Monaten angelegt und längst abgelaufen. Sie kommt über `remoteEnv` in den
+Container. `devkit gitlab status` zeigt die Quelle des Tokens an und warnt bei
+Abweichung. Den alten Wert auf dem Host entfernen:
+
+```powershell
+[Environment]::SetEnvironmentVariable('GITLAB_TOKEN', $null, 'User')
+```
+
+Danach das Terminal bzw. die IDE neu starten. Ohne das Aufräumen benutzt zwar
+DevKit den Wert aus der Datei, `glab` und andere Werkzeuge sehen aber weiterhin
+den alten Token aus der Umgebung.
+
 **`git clone` fragt nach Username/Passwort, obwohl `devkit gitlab status` grün ist**
 Zwei verschiedene Dinge: `status` prüft den **API**-Zugriff (curl mit
 `PRIVATE-TOKEN`), `git clone` benutzt ausschließlich seine **Credential-Helper**
@@ -889,6 +914,13 @@ JetBrains setzen einen eigenen globalen `credential.helper`, der Zugangsdaten
 vom Host durchreicht und interne Instanzen nicht kennt. Deshalb registriert
 DevKit seinen Helper **host-spezifisch**
 (`credential.https://<host>.helper=store`) und lässt den globalen unangetastet.
+
+**Beim Container-Start: „Gruppen sind konfiguriert, aber es wurde kein Projekt aufgelöst"**
+Die Fehlermeldung nennt die Ursache mit: `Token abgelehnt (401)`,
+`zu wenig Rechte (403)`, `Pfad nicht gefunden (404)` oder
+`Instanz nicht erreichbar`. Letzteres heißt VPN/Netz – der Aufruf wiederholt
+sich dreimal, bevor er aufgibt, damit ein noch nicht fertiges Netz beim Start
+nicht sofort zum Fehler führt. `devkit repos sync` holt das jederzeit nach.
 
 **Repositories werden nicht geklont**
 `devkit repos list` zeigt den Status. Bei privaten Repos Zugangsdaten prüfen

@@ -63,7 +63,7 @@ RUN set -euo pipefail; \
         iproute2 iputils-ping dnsutils netcat-openbsd socat \
         bash-completion tzdata locales \
         fontconfig libfreetype6 libxext6 libxrender1 libxtst6 libxi6 libxrandr2 \
-        python3-minimal; \
+        python3; \
     ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && echo "${TZ}" > /etc/timezone; \
     git lfs install --system; \
     apt-get clean && rm -rf /var/lib/apt/lists/*

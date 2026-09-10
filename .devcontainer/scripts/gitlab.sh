@@ -44,26 +44,59 @@ gitlab_base_url() {
     printf 'https://%s' "$host"
 }
 
+# Letzter HTTP-Status von gitlab_api - damit Aufrufer "Token abgelehnt" von
+# "Instanz nicht erreichbar" unterscheiden koennen. 000 = keine Verbindung.
+DEVKIT_GITLAB_LAST_HTTP=""
+
+# Klartext zum letzten Status, fuer Fehlermeldungen.
+gitlab_http_hint() {
+    case "${DEVKIT_GITLAB_LAST_HTTP:-}" in
+        000|"") printf 'Instanz nicht erreichbar (DNS, Netz, VPN)' ;;
+        401)    printf 'Token abgelehnt (401) - abgelaufen oder falscher Wert' ;;
+        403)    printf 'Token hat zu wenig Rechte (403) - Scope read_api noetig' ;;
+        404)    printf 'Pfad nicht gefunden (404) - Gruppenpfad pruefen' ;;
+        5??)    printf 'Serverfehler (%s)' "$DEVKIT_GITLAB_LAST_HTTP" ;;
+        *)      printf 'HTTP %s' "$DEVKIT_GITLAB_LAST_HTTP" ;;
+    esac
+}
+
 # gitlab_api <pfad-mit-query>  ->  ein JSON-Objekt pro Zeile (paginiert)
 gitlab_api() {
-    local path="$1" base token page=1 body
+    local path="$1" base token page=1 body code tmp
     base="$(gitlab_base_url)" || { err "Kein GitLab-Host konfiguriert."; return 1; }
     token="$(gitlab_token)"
     local sep='?'; [[ "$path" == *"?"* ]] && sep='&'
 
     # Ohne Timeout blockiert eine nicht erreichbare Instanz (VPN aus, Netz weg)
     # den postStart-Hook - und damit den Container-Start - auf unbestimmte Zeit.
+    # --retry-all-errors deckt auch "could not resolve host" ab, was --retry
+    # allein als nicht-transient einstuft. Bewusst ohne -f: der HTTP-Status wird
+    # selbst ausgewertet, sonst sind "401 Token abgelehnt" und "kein Netz" nicht
+    # zu unterscheiden - und genau diese Verwechslung kostet bei der Fehlersuche
+    # die meiste Zeit. Ohne -f zaehlt curl 4xx zudem nicht als Fehler und
+    # wiederholt sie nicht.
     local -a tmo=(--connect-timeout "${DEVKIT_GITLAB_CONNECT_TIMEOUT:-5}"
-                  --max-time "${DEVKIT_GITLAB_MAX_TIME:-30}")
+                  --max-time "${DEVKIT_GITLAB_MAX_TIME:-30}"
+                  --retry "${DEVKIT_GITLAB_RETRIES:-3}"
+                  --retry-delay "${DEVKIT_GITLAB_RETRY_DELAY:-2}"
+                  --retry-all-errors)
+    local -a auth=()
+    [ -n "$token" ] && auth=(-H "PRIVATE-TOKEN: $token")
+
+    tmp="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp'" RETURN
 
     while :; do
-        if [ -n "$token" ]; then
-            body="$(curl -fsSL "${tmo[@]}" -H "PRIVATE-TOKEN: $token" \
-                "${base}/api/v4/${path}${sep}per_page=100&page=${page}" 2>/dev/null)" || return 1
-        else
-            body="$(curl -fsSL "${tmo[@]}" \
-                "${base}/api/v4/${path}${sep}per_page=100&page=${page}" 2>/dev/null)" || return 1
-        fi
+        code="$(curl -sSL "${tmo[@]}" "${auth[@]}" -o "$tmp" -w '%{http_code}' \
+            "${base}/api/v4/${path}${sep}per_page=100&page=${page}" 2>/dev/null)" || code="000"
+        DEVKIT_GITLAB_LAST_HTTP="$code"
+        case "$code" in
+            2??) ;;
+            *)   return 1 ;;
+        esac
+
+        body="$(cat "$tmp")"
         [ -z "$body" ] && break
         local len; len="$(jq 'length' <<<"$body" 2>/dev/null || echo 0)"
         [ "$len" -eq 0 ] && break
@@ -120,7 +153,11 @@ gitlab_discover() {
         log "GitLab-Gruppe '$path' wird aufgelöst ..." >&2
         local query projects found=0
         query="groups/$(gitlab_urlencode "$path")/projects?include_subgroups=${subs}&archived=${archived}&order_by=path&sort=asc"
-        projects="$(gitlab_api "$query")" || { err "Gruppe '$path' konnte nicht gelesen werden."; continue; }
+        if ! projects="$(gitlab_api "$query")"; then
+            err "Gruppe '$path' konnte nicht gelesen werden: $(gitlab_http_hint)"
+            detail "Genauer nachsehen: devkit gitlab status" >&2
+            continue
+        fi
 
         while IFS= read -r p; do
             [ -z "$p" ] && continue
@@ -191,22 +228,56 @@ gitlab_status() {
         return 1
     fi
     printf '  %-16s %s\n' "Host" "https://$host"
-    printf '  %-16s %s\n' "Token" "$([ -n "$token" ] && echo gesetzt || echo 'nicht gesetzt')"
+
+    # Woher kommt der Token? Ein vergessener Wert in den Windows-Benutzer-
+    # variablen sieht von innen genauso aus wie ein frisch gepflegter - ohne
+    # diese Zeile bleibt ein 401 unerklaerlich.
+    local quelle="nicht gesetzt"
+    if [ -n "$token" ]; then
+        if grep -qs '^[[:space:]]*GITLAB_TOKEN=' "$DEVKIT_CONFIG/devkit.local.env"; then
+            quelle="gesetzt (aus devkit.local.env)"
+        else
+            quelle="gesetzt (aus der Umgebung)"
+        fi
+    fi
+    printf '  %-16s %s\n' "Token" "$quelle"
+    case " ${DEVKIT_LOCAL_ENV_OVERRIDDEN:-} " in
+        *" GITLAB_TOKEN "*)
+            warn "Der Host reicht einen abweichenden GITLAB_TOKEN durch - devkit.local.env hat Vorrang."
+            detail "Alten Wert entfernen, sonst weicht z. B. glab ab:"
+            detail '  [Environment]::SetEnvironmentVariable("GITLAB_TOKEN", $null, "User")'
+            ;;
+    esac
 
     base="$(gitlab_base_url)"
     if [ -n "$token" ]; then
-        me="$(curl -fsSL --connect-timeout 5 --max-time 15 \
-              -H "PRIVATE-TOKEN: $token" "$base/api/v4/user" 2>/dev/null)" || me=""
+        local utmp; utmp="$(mktemp)"
+        DEVKIT_GITLAB_LAST_HTTP="$(curl -sSL --connect-timeout 5 --max-time 15 \
+              --retry 2 --retry-delay 1 --retry-all-errors \
+              -H "PRIVATE-TOKEN: $token" -o "$utmp" -w '%{http_code}' \
+              "$base/api/v4/user" 2>/dev/null)" || DEVKIT_GITLAB_LAST_HTTP="000"
+        case "$DEVKIT_GITLAB_LAST_HTTP" in
+            2??) me="$(cat "$utmp")" ;;
+            *)   me="" ;;
+        esac
+        rm -f "$utmp"
     else
         me=""
+        DEVKIT_GITLAB_LAST_HTTP=""
     fi
     if [ -n "$me" ] && [ -n "$(jq -r '.username // ""' <<<"$me")" ]; then
         printf '  %-16s %s (%s)\n' "Angemeldet als" \
             "$(jq -r '.username' <<<"$me")" "$(jq -r '.name' <<<"$me")"
     else
-        warn "Keine authentifizierte API-Verbindung."
-        detail "Token als GITLAB_TOKEN setzen; Scopes: read_api, read_repository, write_repository."
-        detail "Bei TLS-Fehlern die Root-CA hinterlegen (README, Abschnitt 7 Root-CA)."
+        warn "Keine authentifizierte API-Verbindung: $(gitlab_http_hint)"
+        case "${DEVKIT_GITLAB_LAST_HTTP:-}" in
+            401|403)
+                detail "Token in devkit.local.env pruefen bzw. neu erzeugen."
+                detail "Scopes: read_api, read_repository, write_repository." ;;
+            000|"")
+                detail "Erreichbarkeit pruefen: getent hosts $host"
+                detail "Bei TLS-Fehlern die Root-CA hinterlegen (README, Abschnitt Root-CA)." ;;
+        esac
     fi
     printf '  %-16s %s\n' "glab" \
         "$(have glab && glab --version 2>/dev/null | head -n1 || echo 'nicht installiert')"

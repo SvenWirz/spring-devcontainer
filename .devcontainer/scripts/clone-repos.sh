@@ -74,6 +74,15 @@ fi
 
 total="$(jq -r '(.repositories // []) | length' <<<"$json")"
 if [ "$total" -eq 0 ]; then
+    # Unterscheiden: gar nichts konfiguriert vs. Gruppenaufloesung fehlgeschlagen.
+    # Beides mit derselben Meldung zu quittieren, schickt einen bei einem
+    # Netzproblem auf die Suche nach einem Konfigurationsfehler.
+    if [ "$(jq -r '(.gitlab.groups // []) | length' <<<"$json")" -gt 0 ]; then
+        err "Gruppen sind konfiguriert, aber es wurde kein Projekt aufgelöst."
+        detail "Verbindung prüfen: devkit gitlab status"
+        detail "Danach erneut: devkit repos sync"
+        exit 1
+    fi
     log "In $CONFIG ist kein Repository eingetragen."
     detail "Repositories unter 'repositories:' ergänzen und 'devkit repos sync' ausführen."
     exit 0
