@@ -10,6 +10,7 @@
 #   devkit gitlab login         glab-Authentifizierung gegen die Instanz
 #   devkit gitlab groups <pfad> Projekte einer Gruppe auflisten
 #   devkit gitlab known-hosts   SSH-Hostkey der Instanz nach ~/.ssh/known_hosts
+#   devkit gitlab harden        glab auf die eigene Instanz festlegen (kein gitlab.com)
 #   devkit gitlab registry      Docker-Login gegen die GitLab Container Registry
 
 [ -n "${_DEVKIT_LIB_LOADED:-}" ] || source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -198,6 +199,57 @@ gitlab_discover() {
     printf '%s' "$out"
 }
 
+# ---------------------------------------------------------------------------
+# glab so einstellen, dass es ausschliesslich mit der eigenen Instanz spricht.
+#
+# Ab Werk steht in der glab-Konfiguration `host: gitlab.com`. Zusammen mit einem
+# gesetzten GITLAB_TOKEN heisst das: jeder Aufruf ohne --hostname schickt den
+# internen Token als PRIVATE-TOKEN-Header an gitlab.com. Dazu kommen taegliche
+# Update-Pruefungen, Telemetrie und "What's new"-Banner, die ebenfalls dorthin
+# gehen - in einem abgeschotteten Netz unerwuenscht und irritierend.
+#
+# Idempotent; ohne konfigurierten Host bleibt der Default von glab unangetastet.
+# ---------------------------------------------------------------------------
+# Liest einen Schluessel AUS DER DATEI. Nicht ueber `glab config get -g`:
+# das liefert trotz --global den Wert der passenden Umgebungsvariablen. Mit
+# gesetztem GITLAB_HOST meldet es also "host = gitlab.example.com", waehrend in der
+# Datei weiter gitlab.com steht - die Pruefung waere immer zufrieden und die
+# Datei bliebe unveraendert.
+_glab_file_value() {
+    local cfg="${GLAB_CONFIG_DIR:-$HOME/.config/glab-cli}/config.yml"
+    [ -f "$cfg" ] || { printf ''; return 0; }
+    # Bewusst ohne `// ""`: der Alternative-Operator greift auch bei `false`,
+    # nicht nur bei `null`. Ein auf false gesetzter Schalter kaeme sonst als
+    # leerer String zurueck und wuerde bei jedem Lauf erneut geschrieben.
+    local v
+    v="$(yq -r ".$1" "$cfg" 2>/dev/null)" || v=""
+    [ "$v" = "null" ] && v=""
+    printf '%s' "$v"
+}
+
+gitlab_configure_glab() {
+    have glab || return 0
+    local host changed=0
+    host="$(gitlab_host)"
+
+    # Ausgehende Aufrufe an gitlab.com abschalten.
+    local kv key val
+    for kv in "check_update false" "telemetry false" \
+              "show_whats_new false" "notify_skill_updates false"; do
+        key="${kv%% *}"; val="${kv#* }"
+        [ "$(_glab_file_value "$key")" = "$val" ] && continue
+        glab config set -g "$key" "$val" >/dev/null 2>&1 && changed=1
+    done
+
+    if [ -n "$host" ] && [ "$(_glab_file_value host)" != "$host" ]; then
+        glab config set -g host "$host" >/dev/null 2>&1 && changed=1
+    fi
+
+    if [ "$changed" = "1" ]; then
+        ok "glab auf ${host:-die konfigurierte Instanz} festgelegt; Update-Check und Telemetrie aus."
+    fi
+}
+
 # --- SSH-Hostkey hinterlegen, damit `git clone` nicht interaktiv nachfragt ---
 gitlab_known_hosts() {
     local host port; host="$(gitlab_host)"
@@ -299,6 +351,11 @@ gitlab_login() {
     host="$(gitlab_host)"; token="$(gitlab_token)"
     [ -z "$host" ] && die "Kein GitLab-Host konfiguriert."
     have glab || die "glab ist nicht installiert (siehe Dockerfile, Abschnitt 7)."
+
+    # Zuerst festlegen, wohin glab ueberhaupt sprechen darf. Sonst schickt schon
+    # der Login-Aufruf Telemetrie und Update-Check an gitlab.com.
+    gitlab_configure_glab
+
     if [ -n "$token" ]; then
         printf '%s' "$token" | glab auth login --hostname "$host" --stdin
     else
@@ -349,6 +406,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         login)       gitlab_login ;;
         registry)    gitlab_registry_login ;;
         known-hosts) gitlab_known_hosts ;;
+        harden)      gitlab_configure_glab; gitlab_status ;;
         groups)
             [ -n "${2:-}" ] || die "Verwendung: devkit gitlab groups <gruppenpfad>"
             gitlab_api "groups/$(gitlab_urlencode "$2")/projects?include_subgroups=true" \

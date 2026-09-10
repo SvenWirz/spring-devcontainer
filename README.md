@@ -12,8 +12,9 @@ Microservices mit dem AI-Agenten **OpenCode**, nutzbar aus **IntelliJ IDEA**
 | Root-CA | `.devcontainer/certs/` in System- **und** Java-Truststore, bereits zur Build-Zeit |
 | Persistentes Volume | Named Volumes für `/src`, Gradle-Cache, OpenCode-Daten, Docker-Daten, IDE-Cache |
 | Repositories | deklarativ in `.devcontainer/config/repositories.yaml`, Klonen nach `/src` |
-| Toolchain | Eclipse Temurin JDK **17 und 21**, Gradle, OpenCode, Node LTS + npm, `glab` |
+| Toolchain | Eclipse Temurin JDK **17 und 21**, Gradle, OpenCode, Node LTS + npm, `uv`/`uvx`, `glab` |
 | Registry-Mirror | `daemon.json` des inneren Daemons + Testcontainers-Image-Präfix gegen Docker-Hub-Limits |
+| `/tmp` auf Platte | eigenes Volume statt tmpfs – sonst landen Build-Zwischenstände im RAM |
 | Commit-Signierung | GPG (Schlüsselbund vom Host) oder SSH-Signierung, automatisch eingerichtet |
 | Vorgebautes Image | `.gitlab-ci.yml` baut und pusht das Image in die GitLab Registry |
 | Self-hosted GitLab | Gruppen-Discovery beim Klonen, Credential-Helper, Container-/Maven-Registry |
@@ -65,7 +66,7 @@ devcontainer exec --workspace-folder . bash
 ```
 .devcontainer/
 ├── devcontainer.json          Container-Definition, Mounts, Volumes, Lifecycle
-├── Dockerfile                 Temurin 17+21, Gradle, OpenCode, glab, Tooling
+├── Dockerfile                 Temurin 17+21, Gradle, OpenCode, glab, uv, Tooling
 ├── certs/                     Root-CA-Zertifikate ablegen  (read-only gemountet)
 ├── config/                    read-only nach /opt/devkit/config gemountet
 │   ├── devkit.env.example     Vorlage für lokale Werte (Token, Hostnamen)
@@ -109,7 +110,7 @@ Pfade im Container:
 
 ## 4. Persistente Volumes
 
-Angelegt werden fünf Named Volumes (`<projektordner>` = Name dieses Verzeichnisses):
+Angelegt werden sieben Named Volumes (`<projektordner>` = Name dieses Verzeichnisses):
 
 | Volume | Mountpunkt | Zweck |
 |---|---|---|
@@ -118,6 +119,8 @@ Angelegt werden fünf Named Volumes (`<projektordner>` = Name dieses Verzeichnis
 | `<projektordner>-opencode` | `~/.local/share/opencode` | OpenCode-Logins, Sessions |
 | `<projektordner>-docker` | `/var/lib/docker` | Images des inneren Docker-Daemons |
 | `<projektordner>-jetbrains` | `~/.cache/JetBrains` | IDE-Indizes (kein Re-Indexing nach Rebuild) |
+| `<projektordner>-uv` | `~/.cache/uv` | Paket-Cache von `uv`/`uvx` |
+| `<projektordner>-tmp` | `/tmp` | temporäre Dateien – **auf Platte statt im RAM**, siehe unten |
 
 Ein *Rebuild* des Containers lässt alle Volumes unangetastet – Quellcode,
 Caches und Logins bleiben erhalten. Vollständig zurücksetzen:
@@ -290,7 +293,37 @@ devkit gitlab groups platform/services   # zeigt, was gefunden würde
 devkit repos sync                        # klont fehlende Projekte
 ```
 
-### 6.3 glab – Merge Requests und Pipelines aus dem Container
+### 6.3 glab spricht nur mit der eigenen Instanz
+
+`glab` bringt ab Werk `host: gitlab.com` mit. Zusammen mit einem gesetzten
+`GITLAB_TOKEN` heißt das: **jeder Aufruf ohne `--hostname` schickt den internen
+Token als `PRIVATE-TOKEN`-Header an gitlab.com.** Dazu kommen tägliche
+Update-Prüfungen, Telemetrie und „What's new"-Banner, die ebenfalls dorthin
+gehen.
+
+Der Container biegt das beim Start gerade – gesetzt werden:
+
+| Schlüssel | Wert | Wirkung |
+|---|---|---|
+| `host` | die konfigurierte Instanz | kein Aufruf landet mehr bei gitlab.com |
+| `check_update` | `false` | keine tägliche Versionsabfrage |
+| `telemetry` | `false` | keine Nutzungsdaten |
+| `show_whats_new` | `false` | kein Banner nach Updates |
+| `notify_skill_updates` | `false` | keine Skill-Hinweise |
+
+```bash
+devkit gitlab harden    # erneut anwenden, z. B. nach einem glab-Update
+```
+
+Ohne konfigurierten Host bleibt glabs Vorgabe unangetastet – wer keinen
+`gitlab.host` setzt, bekommt also weiterhin das Standardverhalten.
+
+> Zum Prüfen taugt `glab config get -g host` **nicht**: der Befehl liefert trotz
+> `--global` den Wert der Umgebungsvariablen `GITLAB_HOST` und bestätigt sich
+> damit selbst. Maßgeblich ist die Datei:
+> `yq -r .host ~/.config/glab-cli/config.yml`.
+
+### 6.4 glab – Merge Requests und Pipelines aus dem Container
 
 ```bash
 devkit gitlab login          # meldet glab an der Instanz an (nutzt GITLAB_TOKEN)
@@ -300,7 +333,7 @@ glab ci status
 glab ci view
 ```
 
-### 6.4 Container Registry im Docker-in-Docker
+### 6.5 Container Registry im Docker-in-Docker
 
 ```bash
 devkit gitlab registry       # docker login gegen registry.<GITLAB_HOST>
@@ -312,7 +345,7 @@ Registry ein eigenes Zertifikat, zusätzlich
 `"DEVKIT_DOCKER_REGISTRIES": "registry.gitlab.example.com"` in `containerEnv`
 eintragen (siehe Abschnitt "Root-CA hinterlegen").
 
-### 6.5 Maven Package Registry als Gradle-Repository
+### 6.6 Maven Package Registry als Gradle-Repository
 
 `.devcontainer/config/gradle/init.d/20-gitlab-maven.gradle.kts.example` ohne die
 Endung `.example` ablegen und konfigurieren – entweder über `GITLAB_MAVEN_URL`
@@ -329,7 +362,7 @@ GitLab authentifiziert die Maven-Registry über einen HTTP-Header
 Init-Skript setzt das bereits korrekt um und gilt dann für **alle** Builds im
 Container.
 
-### 6.6 SSH statt HTTPS
+### 6.7 SSH statt HTTPS
 
 `gitlab.protocol: ssh` in `repositories.yaml` setzen und den SSH-Mount in
 `devcontainer.json` einkommentieren (Abschnitt "Repositories konfigurieren", Unterpunkt "Git-Zugang"). Der Hostkey der
@@ -337,7 +370,7 @@ Instanz wird beim Start automatisch nach `~/.ssh/known_hosts` übernommen
 (`devkit gitlab known-hosts`) – ohne ihn würde `git clone` mit einer interaktiven
 Rückfrage hängen bleiben. Abweichender SSH-Port: `GITLAB_SSH_PORT`.
 
-### 6.7 Befehlsübersicht
+### 6.8 Befehlsübersicht
 
 ```
 devkit gitlab status              Host, Token, angemeldeter Benutzer, glab, Registry
@@ -345,6 +378,7 @@ devkit gitlab login               glab an der Instanz anmelden
 devkit gitlab groups <pfad>       Projekte einer Gruppe auflisten
 devkit gitlab registry            Docker-Login gegen die Container Registry
 devkit gitlab known-hosts         SSH-Hostkey übernehmen
+devkit gitlab harden              glab auf die eigene Instanz festlegen
 ```
 
 ---
@@ -664,6 +698,33 @@ Host-Daemon, Testcontainers-Port-Mapping verhält sich dann anders): in
 `"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}`,
 `"privileged": true` entfernen und das Volume `...-docker` löschen.
 
+### `/tmp` liegt auf der Platte, nicht im Arbeitsspeicher
+
+Das `docker-in-docker`-Feature mountet `/tmp` beim Start als **tmpfs** – also
+RAM. Auf einer Maschine mit 16 GB sind das rund 7,6 GB, die sich Gradle-
+Zwischenstände, entpackte Testcontainers-Layer und Downloads mit allem anderen
+teilen. Das Ergebnis ist `no space left on device` oder ein OOM-Kill, während
+die Platte zu 80 % frei ist.
+
+Das Feature mountet allerdings nur, *wenn dort noch kein Mount liegt*
+(`if ! mountpoint -q /tmp`). Deshalb hängt `devcontainer.json` ein eigenes
+Volume auf `/tmp` – das Feature lässt es dann in Ruhe:
+
+```jsonc
+"source=${localWorkspaceFolderBasename}-tmp,target=/tmp,type=volume",
+```
+
+Prüfen lässt sich das mit `devkit doctor`; die Zeile `/tmp` weist Dateisystem
+und freien Platz aus und warnt ausdrücklich, wenn dort wieder ein tmpfs liegt.
+
+Weil ein Volume – anders als ein frisches tmpfs – beim Start nicht geleert wird,
+räumt `postStart` Dateien auf, auf die seit 7 Tagen nicht zugegriffen wurde
+(`DEVKIT_TMP_MAX_AGE_DAYS`, `0` schaltet es ab).
+
+Zusätzlich bekommt `/dev/shm` 2 GB statt der 64 MB, die Docker vorgibt
+(`runArgs: ["--shm-size=2g"]`) – darunter brechen Chrome-basierte Tests und
+einige Datenbank-Container sporadisch ab.
+
 ### Registry-Mirror gegen Docker-Hub-Rate-Limits
 
 Im Firmennetz ist das die Stelle, an der Docker-in-Docker als Erstes bricht:
@@ -836,6 +897,7 @@ devkit java             installierte JDKs anzeigen
 devkit docker           daemon.json des inneren Daemons anwenden/anzeigen
 devkit sign             Commit-Signierung (neu) einrichten
 devkit gitlab status    Verbindung zur GitLab-Instanz prüfen
+devkit gitlab harden    glab auf die eigene Instanz festlegen
 ```
 
 ---
@@ -849,6 +911,7 @@ devkit gitlab status    Verbindung zur GitLab-Instanz prüfen
 | Gradle-Version pinnen | `build.args.GRADLE_VERSION` von `current` auf z. B. `8.14.3` setzen |
 | OpenCode-Version pinnen | `build.args.OPENCODE_VERSION` auf eine konkrete Version setzen |
 | Node-Version | `features` -> `node:1` -> `version` (`lts` oder z. B. `22`) |
+| uv-Version pinnen | `build.args.UV_VERSION` von `latest` auf z. B. `0.12.12` setzen |
 | Zusätzliches Tooling | Pakete im `Dockerfile` (Schritt 2) ergänzen oder ein Feature in `devcontainer.json` hinzufügen |
 | Weitere Ports | `forwardPorts` / `portsAttributes` erweitern |
 | Zeitzone | `build.args.TZ` |
@@ -939,6 +1002,24 @@ oder der Docker-Engine mehr RAM zuweisen (Docker Desktop > Settings > Resources)
 **git meldet "dubious ownership"**
 Sollte durch `safe.directory=*` abgedeckt sein; sonst
 `bash /workspaces/devkit/.devcontainer/scripts/configure-git.sh` erneut ausführen.
+
+**`no space left on device` oder OOM, obwohl die Platte frei ist**
+Fast immer liegt `/tmp` im Arbeitsspeicher. `devkit doctor` zeigt es in der
+Zeile `/tmp`; steht dort `tmpfs`, fehlt das `/tmp`-Volume aus
+`devcontainer.json` (siehe Abschnitt „Docker-in-Docker"). Schnellprüfung:
+
+```bash
+findmnt -no SOURCE,FSTYPE,SIZE --target /tmp
+```
+
+Ist der Container älter als die Änderung, hilft ein *Rebuild* – der Mount wird
+nur beim Erstellen gesetzt.
+
+**`glab` kontaktiert gitlab.com, obwohl die Instanz self-hosted ist**
+`glab` hat `gitlab.com` als eingebaute Vorgabe. `devkit gitlab harden` setzt
+Host, Update-Check und Telemetrie zurecht; ausgeführt wird das auch bei jedem
+`postCreate` und bei `devkit gitlab login`. Prüfen über die Datei, nicht über
+`glab config get` (siehe Abschnitt 6.3).
 
 **`docker pull` bzw. Testcontainers meldet `toomanyrequests`**
 Docker-Hub-Rate-Limit. Registry-Mirror in

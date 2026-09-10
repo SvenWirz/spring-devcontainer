@@ -18,6 +18,7 @@ ARG GRADLE_VERSION=current
 ARG OPENCODE_VERSION=latest
 ARG YQ_VERSION=latest
 ARG GLAB_VERSION=latest
+ARG UV_VERSION=latest
 ARG TZ=Europe/Berlin
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -206,10 +207,33 @@ RUN set -uo pipefail; \
     rm -rf /tmp/glab /tmp/glab.tar.gz
 
 # ---------------------------------------------------------------------------
-# 8) Verzeichnisse für die Volume-Mounts anlegen.
+# 8) uv / uvx - schneller Python-Paketmanager von Astral.
+#    uvx fuehrt Python-Werkzeuge in einer Wegwerf-Umgebung aus, ohne sie global
+#    zu installieren - praktisch fuer npm-lose MCP-Server, yamllint, pre-commit
+#    und aehnliches Beiwerk neben dem Java-Stack.
+#    Der Installer respektiert SSL_CERT_FILE, laeuft also auch hinter der
+#    Firmen-CA aus Schritt 1.
+# ---------------------------------------------------------------------------
+RUN set -eu; \
+    if [ "${UV_VERSION}" = "latest" ]; then \
+        url="https://astral.sh/uv/install.sh"; \
+    else \
+        url="https://astral.sh/uv/${UV_VERSION}/install.sh"; \
+    fi; \
+    export UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1; \
+    curl -LsSf "$url" | sh; \
+    uv --version; \
+    uvx --version
+
+# ---------------------------------------------------------------------------
+# 9) Verzeichnisse für die Volume-Mounts anlegen.
 #    Docker übernimmt beim erstmaligen Anlegen eines Named Volumes Rechte und
 #    Eigentümer des Pfads aus dem Image – dadurch gehören die Volumes direkt
 #    dem Entwicklungs-User und nicht root.
+#
+#    /tmp bekommt bewusst 1777 (sticky, world-writable): es liegt zur Laufzeit
+#    auf einem Volume, das diese Rechte beim ersten Anlegen aus dem Image erbt.
+#    Ohne das koennten nicht-root-Prozesse dort nichts ablegen.
 # ---------------------------------------------------------------------------
 RUN set -euo pipefail; \
     install -d -o "${USERNAME}" -g "${USERNAME}" -m 0755 \
@@ -221,11 +245,13 @@ RUN set -euo pipefail; \
         "/home/${USERNAME}/.config/JetBrains" \
         "/home/${USERNAME}/.cache" \
         "/home/${USERNAME}/.cache/JetBrains" \
+        "/home/${USERNAME}/.cache/uv" \
         "/home/${USERNAME}/.local" \
         "/home/${USERNAME}/.local/share" \
         "/home/${USERNAME}/.local/share/opencode"; \
     install -d -m 0755 /opt/devkit /opt/devkit/config /opt/devkit/certs \
-        /var/lib/docker /etc/docker
+        /var/lib/docker /etc/docker; \
+    chmod 1777 /tmp
 
 # Gradle-Daemon-Speicher konservativ vorbelegen; per gradle.properties übersteuerbar.
 ENV GRADLE_USER_HOME=/home/${USERNAME}/.gradle \

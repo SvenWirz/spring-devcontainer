@@ -43,6 +43,8 @@ doctor() {
     check "OpenCode" opencode --version
     check "Node"     node --version
     check "npm"      npm --version
+    check "uv"       uv --version
+    check "uvx"      uvx --version
     check "Git"      git --version
     check "yq"       yq --version
     check "jq"       jq --version
@@ -101,6 +103,13 @@ doctor() {
     printf '  %s·%s %-14s %s\n' "$_c_dim" "$_c_reset" "Java-CAs" "$n_jvm eigene Zertifikate"
 
     section "Volumes & Pfade"
+    # /tmp im RAM ist die haeufigste Ursache fuer "no space left on device"
+    # trotz freier Platte - deshalb hier ausdruecklich ausweisen.
+    local tmpsrc tmpfs_warn=""
+    tmpsrc="$(findmnt -no FSTYPE --target /tmp 2>/dev/null || echo unbekannt)"
+    [ "$tmpsrc" = "tmpfs" ] && tmpfs_warn="  <-- liegt im RAM!"
+    printf '  %-16s %s (%s, frei: %s)%s
+' "/tmp" "$tmpsrc"         "$(du -sh /tmp 2>/dev/null | cut -f1)"         "$(df -h --output=avail /tmp 2>/dev/null | tail -1 | tr -d ' ')" "$tmpfs_warn"
     printf '  %-16s %s\n' "Workspace"  "$DEVKIT_WORKSPACE ($(du -sh "$DEVKIT_WORKSPACE" 2>/dev/null | cut -f1))"
     printf '  %-16s %s\n' "Gradle-Home" "${GRADLE_USER_HOME:-$HOME/.gradle}"
     printf '  %-16s %s\n' "Config-Mount" "$DEVKIT_CONFIG"

@@ -56,6 +56,10 @@
   "privileged": true,
   "init": true,
 
+  // Docker gibt /dev/shm sonst nur 64 MB. Chrome-basierte Tests und einige
+  // Datenbank-Container im Testcontainers-Betrieb brechen darunter sporadisch ab.
+  "runArgs": ["--shm-size=2g"],
+
   // Das lokale Setup-Repo (dieses Projekt) liegt als Bind-Mount im Container,
   // damit Änderungen an Config und Skripten sofort wirken.
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/devkit,type=bind,consistency=cached",
@@ -74,6 +78,16 @@
     "source=${localWorkspaceFolderBasename}-docker,target=/var/lib/docker,type=volume",
     // Indizes/Caches des JetBrains-Backends – spart Re-Indexierung nach Rebuild.
     "source=${localWorkspaceFolderBasename}-jetbrains,target=/home/vscode/.cache/JetBrains,type=volume",
+    // Paket-Cache von uv/uvx.
+    "source=${localWorkspaceFolderBasename}-uv,target=/home/vscode/.cache/uv,type=volume",
+
+    // /tmp auf die Platte statt in den Arbeitsspeicher.
+    // Das docker-in-docker-Feature mountet /tmp beim Start als tmpfs - also RAM -,
+    // aber nur wenn dort noch kein Mount liegt ("if ! mountpoint -q /tmp").
+    // Ohne dieses Volume landen Gradle-Zwischenstaende, Testcontainers-Layer und
+    // OpenCode-Downloads im RAM und fuehren dort zu "no space left on device",
+    // lange bevor die Platte voll ist.
+    "source=${localWorkspaceFolderBasename}-tmp,target=/tmp,type=volume",
 
     // ---- Gemountete Konfiguration (read-only) --------------------------------
     // Enthält repositories.yaml, gradle/ und opencode/.

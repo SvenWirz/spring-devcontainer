@@ -18,6 +18,16 @@ fi
 # Neu hinzugefügte Zertifikate übernehmen (idempotent).
 bash "$SCRIPT_DIR/install-ca-certs.sh" || warn "CA-Installation fehlgeschlagen."
 
+# /tmp liegt auf einem Volume und wird - anders als ein frisches tmpfs - beim
+# Start nicht automatisch geleert. Alte Reste entfernen, damit es nicht
+# unbegrenzt waechst. DEVKIT_TMP_MAX_AGE_DAYS=0 schaltet das ab.
+if mountpoint -q /tmp 2>/dev/null; then
+    age="${DEVKIT_TMP_MAX_AGE_DAYS:-7}"
+    if [ "$age" != "0" ]; then
+        find /tmp -mindepth 1 -maxdepth 1 -atime "+$age"              -exec rm -rf {} + 2>/dev/null || true
+    fi
+fi
+
 # Registry-Mirror des inneren Daemons anwenden. Muss vor dem ersten Pull
 # passieren, sonst laufen Testcontainers-Pulls doch gegen Docker Hub.
 bash "$SCRIPT_DIR/configure-docker.sh" >/dev/null || warn "Docker-Daemon-Konfiguration nicht angewendet."

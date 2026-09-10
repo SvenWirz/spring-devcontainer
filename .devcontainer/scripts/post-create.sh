@@ -44,6 +44,8 @@ bash "$SCRIPT_DIR/install-ca-certs.sh" || warn "Root-CA konnte nicht vollstaendi
 bash "$SCRIPT_DIR/configure-git.sh"       || warn "Git-Konfiguration unvollstaendig."
 bash "$SCRIPT_DIR/configure-gpg.sh"       || warn "Commit-Signierung nicht konfiguriert."
 bash "$SCRIPT_DIR/configure-docker.sh"    || warn "Docker-Daemon-Konfiguration nicht angewendet."
+# glab ab Werk auf gitlab.com festgenagelt - hier auf die eigene Instanz umbiegen.
+bash "$SCRIPT_DIR/gitlab.sh" harden > /dev/null 2>&1 || true
 bash "$SCRIPT_DIR/link-configs.sh"        || warn "Config-Verknuepfung unvollstaendig."
 bash "$SCRIPT_DIR/clone-repos.sh" sync || warn "Nicht alle Repositories konnten geklont werden."
 
