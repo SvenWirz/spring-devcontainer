@@ -32,7 +32,7 @@ shopt -s nullglob nocaseglob
 for src in "$CERT_SRC"/*.crt "$CERT_SRC"/*.pem "$CERT_SRC"/*.cer "$CERT_SRC"/*.der; do
     [ -f "$src" ] || continue
     base="$(basename "$src")"
-    stem="$(echo "${base%.*}" | tr -c '[:alnum:]._-' '-')"
+    stem="$(printf '%s' "${base%.*}" | tr -c '[:alnum:]._-' '-')"
 
     # DER (binär) nach PEM konvertieren, PEM direkt weiterverwenden.
     if grep -qs -- '-----BEGIN CERTIFICATE-----' "$src"; then
@@ -60,24 +60,41 @@ for c in "$WORK_DIR"/*.crt; do
 done
 
 if [ "$count" -eq 0 ]; then
-    log "Keine Zertifikate in $CERT_SRC gefunden - nichts zu tun."
+    log "Keine Zertifikate in $CERT_SRC gefunden."
     detail "Root-CA als .crt/.pem/.cer nach .devcontainer/certs/ legen und Container neu starten."
-    exit 0
+    # Kein vorzeitiges Ende: waren frueher Zertifikate hinterlegt und wurden
+    # bewusst entfernt, muessen sie auch aus beiden Truststores verschwinden.
+    # Die folgenden Schleifen laufen dann einfach ueber eine leere Menge.
 fi
 
 # --- 2) System-Truststore --------------------------------------------------
+shopt -s nullglob
 as_root install -d -m 0755 "$SYS_DIR"
 as_root find "$SYS_DIR" -maxdepth 1 -name '*.crt' -delete
 for c in "$WORK_DIR"/*.crt; do
     as_root install -m 0644 "$c" "$SYS_DIR/$(basename "$c")"
 done
 as_root update-ca-certificates >/dev/null
-ok "$count Zertifikat(e) im System-Truststore installiert."
+if [ "$count" -gt 0 ]; then
+    ok "$count Zertifikat(e) im System-Truststore installiert."
+else
+    detail "System-Truststore enthält keine eigenen Zertifikate mehr."
+fi
 
 # --- 3) Java-Truststores ---------------------------------------------------
 # Es sind mehrere JDKs installiert (siehe Dockerfile, JAVA_VERSIONS). Jedes
-# bringt seinen eigenen cacerts mit - die CA muss in alle, sonst schlaegt ein
-# Build fehl, sobald ein Service per Gradle-Toolchain auf ein anderes JDK geht.
+# koennte einen eigenen cacerts mitbringen - die CA muss in alle, sonst schlaegt
+# ein Build fehl, sobald ein Service per Gradle-Toolchain auf ein anderes JDK
+# geht. Doppelte Stores werden ueber den aufgeloesten Pfad zusammengefasst.
+#
+# Auf dem Adoptium-Debian-Unterbau zeigen alle JDKs auf
+# /etc/ssl/certs/adoptium/cacerts, und ein Hook in /etc/ca-certificates/update.d
+# synchronisiert diesen Store bei jedem update-ca-certificates aus dem
+# System-Truststore. Der Import unten ist dort streng genommen redundant (man
+# sieht dann zwei Aliase fuer dasselbe Zertifikat) - er bleibt trotzdem, damit
+# das Skript auch auf einem Basis-Image ohne diesen Hook funktioniert. Aus dem
+# gleichen Grund raeumt die Schleife verwaiste Aliase selbst auf, statt sich
+# darauf zu verlassen, dass der Hook das erledigt.
 STOREPASS="${DEVKIT_TRUSTSTORE_PASS:-changeit}"
 
 keystores=()
@@ -97,8 +114,30 @@ if [ ${#keystores[@]} -eq 0 ]; then
     exit 0
 fi
 
+# Aktuell gueltige Aliase - alles andere mit devkit-Praefix ist ein Ueberbleibsel.
+wanted=""
+for c in "$WORK_DIR"/*.crt; do
+    wanted="$wanted devkit-$(basename "$c" .crt)"
+done
+
 for ks in "${keystores[@]}"; do
     imported=0
+
+    # Verwaiste Eintraege entfernen. Ohne diesen Schritt bleibt ein aus
+    # .devcontainer/certs geloeschtes Zertifikat im JVM-Truststore fuer immer
+    # vertrauenswuerdig - der System-Truststore wird dagegen bei jedem Lauf neu
+    # aufgebaut, sodass beide sonst auseinanderlaufen.
+    removed=0
+    while IFS= read -r alias; do
+        [ -n "$alias" ] || continue
+        case " $wanted " in
+            *" $alias "*) continue ;;
+        esac
+        as_root keytool -delete -alias "$alias" -keystore "$ks" \
+            -storepass "$STOREPASS" >/dev/null 2>&1 && removed=$((removed + 1))
+    done < <(as_root keytool -list -keystore "$ks" -storepass "$STOREPASS" 2>/dev/null \
+             | awk -F, '/^devkit-/ { print $1 }')
+
     for c in "$WORK_DIR"/*.crt; do
         alias="devkit-$(basename "$c" .crt)"
         # Alten Eintrag entfernen, damit ein ausgetauschtes Zertifikat wirklich greift.
@@ -111,14 +150,22 @@ for ks in "${keystores[@]}"; do
             warn "Import von $(basename "$c") in $ks fehlgeschlagen."
         fi
     done
+
     jdk="$(basename "$(dirname "$(dirname "$(dirname "$ks")")")")"
-    ok "$imported Zertifikat(e) im Java-Truststore ($jdk)."
+    if [ "$removed" -gt 0 ]; then
+        ok "$imported Zertifikat(e) im Java-Truststore ($jdk), $removed verwaiste entfernt."
+    else
+        ok "$imported Zertifikat(e) im Java-Truststore ($jdk)."
+    fi
 done
 
 for c in "$WORK_DIR"/*.crt; do
+    [ -f "$c" ] || continue
     subject="$(openssl x509 -in "$c" -noout -subject 2>/dev/null | sed 's/^subject=//')"
     detail "devkit-$(basename "$c" .crt)  ${subject:-}"
 done
+
+shopt -u nullglob
 
 # --- 4) Hinweis für den inneren Docker-Daemon ------------------------------
 # Docker liest Registry-CAs aus dem System-Store; für Registries mit eigenem
